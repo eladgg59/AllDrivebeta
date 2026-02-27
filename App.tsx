@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { LogBox, StyleSheet, Platform } from 'react-native';
+import { LogBox, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { RootStackNavigatorParamsList } from './RootStackNavigator';
@@ -70,19 +70,6 @@ const AppContent = () => {
 };
 
 export default function App() {
-    useEffect(() => {
-        if (Platform.OS === 'web' && typeof document !== 'undefined') {
-            const style = document.createElement('style');
-            style.id = 'alldrive-scroll-fix';
-            style.textContent = `body { overflow: auto !important; }`;
-            document.head.appendChild(style);
-            return () => {
-                const el = document.getElementById('alldrive-scroll-fix');
-                if (el) el.remove();
-            };
-        }
-    }, []);
-
     return (
         <NavigationContainer>
             <AuthProvider>

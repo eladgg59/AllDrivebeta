@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,6 @@ import {
   Linking,
   TouchableOpacity,
   Dimensions,
-  PixelRatio,
   Platform,
   ScrollView,
   Modal,
@@ -23,15 +22,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
-import {isGoogleDriveTokenValid} from "../src/Scripts/GoogleUtils";
+import { isGoogleDriveTokenValid } from "../src/Scripts/GoogleUtils";
 import HomeScreenOneDrive from "./HomeScreenOneDrive";
 import { NavigationContainer } from '@react-navigation/native';
 WebBrowser.maybeCompleteAuthSession();
 
-const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
-const fileItemWidth = Math.max(screenWidth/8, 200);
-const fileItemHeight = Math.max(screenWidth/7.5, 240);
-const numColumns = Math.floor((screenWidth*0.95) / fileItemWidth);
+const { width: screenWidth } = Dimensions.get('window');
 
 interface GoogleDriveFile {
   id: string;
@@ -39,7 +35,6 @@ interface GoogleDriveFile {
   mimeType?: string;
   modifiedTime?: string;
   webContentLink?: string;
-  // Added: which Google account this file belongs to
   accountEmail?: string;
   accountName?: string;
 }
@@ -63,59 +58,132 @@ interface FolderBreadcrumb {
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
 const HomeScreen = () => {
-  const [request, response, promptAsync] = Google.useAuthRequest(
-    {
-      clientId: '494172450205-daf4jjdss0u07gau3oge0unndfjvha0b.apps.googleusercontent.com',
-      scopes: ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile'],
-      // Always show account picker so you can add another account
-      extraParams: {
-        prompt: 'select_account',
-      },
-    }
-  );
+  const [request, response, promptAsync] = Google.useAuthRequest({
+    clientId: '494172450205-daf4jjdss0u07gau3oge0unndfjvha0b.apps.googleusercontent.com',
+    scopes: ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile'],
+    extraParams: { prompt: 'select_account' },
+  });
 
   const [loading, setLoading] = useState<boolean>(false);
   const [userInfo, setUserInfo] = useState<GoogleDriveFile[]>([]);
   const [isRequestReady, setIsRequestReady] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
   const [searchText, setSearchText] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [filterAccount, setFilterAccount] = useState<string | null>(null); // null = All accounts
-  const [filterFileType, setFilterFileType] = useState<string | null>(null); // null = All types
-  const [connectedAccountTokens, setConnectedAccountTokens] = useState<
-    Array<{
-      email: string;
-      name?: string;
-      accessToken: string;
-      storageLimit?: number;
-      storageUsage?: number;
-    }>
-  >([]);
+  const [filterAccount, setFilterAccount] = useState<string | null>(null);
+  const [filterFileType, setFilterFileType] = useState<string | null>(null);
+  const [connectedAccountTokens, setConnectedAccountTokens] = useState<Array<{
+    email: string;
+    name?: string;
+    accessToken: string;
+    storageLimit?: number;
+    storageUsage?: number;
+  }>>([]);
   const [showUploadAccountPicker, setShowUploadAccountPicker] = useState(false);
   const [showUploadFolderAccountPicker, setShowUploadFolderAccountPicker] = useState(false);
   const [folderStack, setFolderStack] = useState<FolderBreadcrumb[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
-    const [screenWidth, setScreenWidth] = useState(Dimensions.get('window').width);
-    useEffect(() => {
-        const updateDimensions = () => {
-            setScreenWidth(Dimensions.get('window').width);
-        };
-        const subscription = Dimensions.addEventListener('change', updateDimensions);
-        return () => subscription?.remove();
-    }, []);
+  const [screenWidthState, setScreenWidthState] = useState(Dimensions.get('window').width);
+  useEffect(() => {
+    const sub = Dimensions.addEventListener('change', () => setScreenWidthState(Dimensions.get('window').width));
+    return () => sub?.remove();
+  }, []);
 
-    const CARD_WIDTH =  Math.max(screenWidth/8, 225);;
-    const CARD_HEIGHT = Math.max(screenWidth/7.5, 300);
-    const GRID_PADDING = screenWidth * 0.05;
-    const numColumns = Math.max(1, Math.floor(screenWidth*0.95 / CARD_WIDTH));
-    const totalCardsWidth = numColumns * CARD_WIDTH;
-    const remainingSpace = screenWidth - totalCardsWidth;
-    const spaceBetween = remainingSpace / numColumns;
+  const CARD_WIDTH = Math.max(screenWidthState / 8, 225);
+  const CARD_HEIGHT = Math.max(screenWidthState / 7.5, 300);
+  const numColumns = Math.max(1, Math.floor(screenWidthState * 0.95 / CARD_WIDTH));
+  const totalCardsWidth = numColumns * CARD_WIDTH;
+  const spaceBetween = (screenWidthState - totalCardsWidth) / numColumns;
+
+  useEffect(() => setIsRequestReady(!!request), [request]);
+
+  const fetchGoogleAccountIdentity = async (accessToken: string): Promise<GoogleAccountIdentity> => {
+    try {
+      const res = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      return { email: res.data?.email, name: res.data?.name };
+    } catch (e) {
+      return {};
+    }
+  };
+
+  const fetchDriveStorageQuota = async (accessToken: string): Promise<{ limit?: number; usage?: number }> => {
+    try {
+      const res = await axios.get('https://www.googleapis.com/drive/v3/about', {
+        params: { fields: 'storageQuota(limit,usage)' },
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const sq = res.data?.storageQuota;
+      const limit = sq?.limit != null ? parseInt(sq.limit, 10) : undefined;
+      const usage = sq?.usage != null ? parseInt(sq.usage, 10) : undefined;
+      return { limit: Number.isFinite(limit) ? limit : undefined, usage: Number.isFinite(usage) ? usage : undefined };
+    } catch (e) {
+      return {};
+    }
+  };
+
+  const formatStorageFree = (limit?: number, usage?: number): string => {
+    if (limit == null || limit < 0) return 'Unlimited';
+    const used = usage ?? 0;
+    const freeBytes = Math.max(0, limit - used);
+    const freeGB = freeBytes / (1024 * 1024 * 1024);
+    if (freeGB >= 1) return `${freeGB.toFixed(1)} GB free`;
+    return `${Math.round(freeBytes / (1024 * 1024))} MB free`;
+  };
+
+  const fetchFilesInFolder = async (accessToken: string, account: GoogleAccountIdentity, parentId: string): Promise<GoogleDriveFile[]> => {
+    const allFiles: GoogleDriveFile[] = [];
+    let pageToken: string | null = null;
+    const q = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
+
+    do {
+      const res: { data: GoogleDriveResponse } = await axios.get('https://www.googleapis.com/drive/v3/files', {
+        params: { q, fields: 'files(id, name, mimeType, modifiedTime, webContentLink), nextPageToken', orderBy: 'folder,name', pageSize: 100, pageToken: pageToken || undefined },
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        timeout: 15000,
+      });
+      if (res.data?.files) {
+        allFiles.push(...res.data.files.map((f: GoogleDriveFile) => ({ ...f, accountEmail: account?.email, accountName: account?.name })));
+        pageToken = res.data.nextPageToken || null;
+      } else break;
+    } while (pageToken);
+    return allFiles;
+  };
+
+  const loadCurrentFolder = async (accountsOverride?: typeof connectedAccountTokens, folderStackOverride?: FolderBreadcrumb[]) => {
+    const accounts = accountsOverride ?? connectedAccountTokens;
+    const stack = folderStackOverride ?? folderStack;
+    if (accounts.length === 0) {
+      setUserInfo([]);
+      return;
+    }
+    try {
+      setLoading(true);
+      setError(null);
+      let combined: GoogleDriveFile[] = [];
+      if (stack.length === 0) {
+        for (const acc of accounts) {
+          const files = await fetchFilesInFolder(acc.accessToken, { email: acc.email, name: acc.name }, 'root');
+          combined = combined.concat(files);
+        }
+      } else {
+        const { accountEmail, folderId } = stack[stack.length - 1];
+        const acc = accounts.find((a) => a.email === accountEmail);
+        if (acc) combined = await fetchFilesInFolder(acc.accessToken, { email: acc.email, name: acc.name }, folderId);
+      }
+      setUserInfo(combined);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load folder');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    setIsRequestReady(!!request);
-  }, [request]);
+    if (connectedAccountTokens.length > 0) loadCurrentFolder();
+  }, [folderStack, connectedAccountTokens.length]);
 
   useEffect(() => {
     const handleResponse = async () => {
@@ -131,289 +199,154 @@ const HomeScreen = () => {
             storageLimit: limit,
             storageUsage: usage,
           };
-          const newAccounts = connectedAccountTokens
-            .filter((a) => a.email !== identity?.email)
-            .concat(entry);
+          const newAccounts = connectedAccountTokens.filter((a) => a.email !== identity?.email).concat(entry);
           setConnectedAccountTokens(newAccounts);
           setFolderStack([]);
           await loadCurrentFolder(newAccounts, []);
         }
       } catch (err) {
-        console.error('Error handling response:', err);
         setError('Failed to authenticate');
       }
     };
-
-    if (response) {
-      handleResponse();
-    } else {
-      promptAsync();
-    }
+    if (response) handleResponse();
+    else promptAsync();
   }, [response, promptAsync]);
-  const fetchDriveStorageQuota = async (
-    accessToken: string
-  ): Promise<{ limit?: number; usage?: number }> => {
-    try {
-      const res = await axios.get<{
-        storageQuota?: { limit?: string; usage?: string };
-      }>('https://www.googleapis.com/drive/v3/about', {
-        params: { fields: 'storageQuota(limit,usage)' },
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const sq = res.data?.storageQuota;
-      const limit = sq?.limit != null ? parseInt(sq.limit, 10) : undefined;
-      const usage = sq?.usage != null ? parseInt(sq.usage, 10) : undefined;
-      return { limit: Number.isFinite(limit) ? limit : undefined, usage: Number.isFinite(usage) ? usage : undefined };
-    } catch (e) {
-      console.warn('Failed to fetch Drive storage quota', e);
-      return {};
-    }
-  };
-
-  const formatStorageFree = (limit?: number, usage?: number): string => {
-    if (limit == null || limit < 0) return 'Unlimited';
-    const used = usage ?? 0;
-    const freeBytes = Math.max(0, limit - used);
-    const freeGB = freeBytes / (1024 * 1024 * 1024);
-    if (freeGB >= 1) return `${freeGB.toFixed(1)} GB free`;
-    const freeMB = freeBytes / (1024 * 1024);
-    return `${Math.round(freeMB)} MB free`;
-  };
-
-  const fetchGoogleAccountIdentity = async (accessToken: string): Promise<GoogleAccountIdentity> => {
-    try {
-      const res = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
-      return {
-        email: res.data?.email,
-        name: res.data?.name,
-      };
-    } catch (e) {
-      console.warn('Failed to fetch Google account identity', e);
-      return {};
-    }
-  };
-
-  const fetchFilesInFolder = async (
-    accessToken: string,
-    account: GoogleAccountIdentity,
-    parentId: string
-  ): Promise<GoogleDriveFile[]> => {
-    const allFiles: GoogleDriveFile[] = [];
-    let pageToken: string | null = null;
-
-    const q = parentId === 'root'
-      ? "'root' in parents"
-      : `'${parentId}' in parents`;
-
-    do {
-      const res: { data: GoogleDriveResponse } = await axios.get<GoogleDriveResponse>(
-        'https://www.googleapis.com/drive/v3/files',
-        {
-          params: {
-            q,
-            fields: 'files(id, name, mimeType, modifiedTime, webContentLink), nextPageToken',
-            orderBy: 'folder,name',
-            pageSize: 100,
-            pageToken: pageToken || undefined,
-          },
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          timeout: 15000,
-        }
-      );
-
-      if (res.data?.files) {
-        const tagged = res.data.files.map((file: GoogleDriveFile) => ({
-          ...file,
-          accountEmail: account?.email,
-          accountName: account?.name,
-        }));
-        allFiles.push(...tagged);
-        pageToken = res.data.nextPageToken || null;
-      } else {
-        break;
-      }
-    } while (pageToken);
-
-    return allFiles;
-  };
-
-  const loadCurrentFolder = async (
-    accountsOverride?: typeof connectedAccountTokens,
-    folderStackOverride?: FolderBreadcrumb[]
-  ) => {
-    const accounts = accountsOverride ?? connectedAccountTokens;
-    const stack = folderStackOverride ?? folderStack;
-    if (accounts.length === 0) {
-      setUserInfo([]);
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setError(null);
-      let combined: GoogleDriveFile[] = [];
-
-      if (stack.length === 0) {
-        for (const acc of accounts) {
-          const files = await fetchFilesInFolder(
-            acc.accessToken,
-            { email: acc.email, name: acc.name },
-            'root'
-          );
-          combined = combined.concat(files);
-        }
-      } else {
-        const { accountEmail, folderId } = stack[stack.length - 1];
-        const acc = accounts.find((a) => a.email === accountEmail);
-        if (acc) {
-          combined = await fetchFilesInFolder(
-            acc.accessToken,
-            { email: acc.email, name: acc.name },
-            folderId
-          );
-        }
-      }
-
-      setUserInfo(combined);
-    } catch (err) {
-      console.error('Error loading folder:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load folder');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (connectedAccountTokens.length > 0) {
-      loadCurrentFolder();
-    }
-  }, [folderStack, connectedAccountTokens.length]);
-
-  const handleDownload = (url: string) => {
-    Linking.openURL(url).catch((err) => {
-      console.error('Error opening URL:', err);
-      setError('Failed to download the file');
-    });
-  };
 
   const getUploadParents = (accountEmail: string): string[] | undefined => {
     if (folderStack.length === 0) return undefined;
     const last = folderStack[folderStack.length - 1];
-    if (last.accountEmail === accountEmail) return [last.folderId];
-    return undefined;
+    return last.accountEmail === accountEmail ? [last.folderId] : undefined;
+  };
+
+  const uriToBlob = async (uri: string): Promise<Blob> => {
+    const res = await fetch(uri);
+    return await res.blob();
   };
 
   const performUpload = async (account: { email: string; name?: string; accessToken: string }) => {
     try {
       setShowUploadAccountPicker(false);
       const result = await DocumentPicker.getDocumentAsync();
-
-      if (result.canceled) {
-        return;
-      }
-
-      const file = result.assets?.[0] as { uri: string; name: string; mimeType?: string } | undefined;
-      if (!file) {
-        throw new Error('No file selected');
-      }
-
-      const { uri, name } = file;
-      const blob = await uriToBlob(uri);
-
-      const metadata: { name: string; parents?: string[] } = { name };
+      if (result.canceled) return;
+      const file = result.assets?.[0] as { uri: string; name: string } | undefined;
+      if (!file) throw new Error('No file selected');
+      const blob = await uriToBlob(file.uri);
+      const metadata: { name: string; parents?: string[] } = { name: file.name };
       const parents = getUploadParents(account.email);
       if (parents) metadata.parents = parents;
-
       const formData = new FormData();
       formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-      formData.append('file', blob, name);
-
-      const uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-      const res = await fetch(uploadUrl, {
+      formData.append('file', blob, file.name);
+      const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${account.accessToken}`,
-        },
+        headers: { Authorization: `Bearer ${account.accessToken}` },
         body: formData,
       });
-
-      if (!res.ok) {
-        throw new Error(`Upload failed with status: ${res.status}`);
-      }
-
+      if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
       setError(null);
       await loadCurrentFolder();
     } catch (error) {
-      console.error('Error during file upload:', error);
-      setError(error instanceof Error ? error.message : 'An error occurred while uploading the file.');
+      setError(error instanceof Error ? error.message : 'Upload failed');
     }
+  };
+
+  const createDriveFolder = async (accessToken: string, name: string, parentId?: string): Promise<string> => {
+    const metadata: { name: string; mimeType: string; parents?: string[] } = { name, mimeType: 'application/vnd.google-apps.folder' };
+    if (parentId) metadata.parents = [parentId];
+    const res = await fetch('https://www.googleapis.com/drive/v3/files', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(metadata),
+    });
+    if (!res.ok) throw new Error(`Failed to create folder: ${res.status}`);
+    const data = await res.json();
+    return data.id;
   };
 
   const performUploadFolder = async (account: { email: string; name?: string; accessToken: string }) => {
     try {
       setShowUploadFolderAccountPicker(false);
-      const result = await DocumentPicker.getDocumentAsync({ multiple: true });
-
-      if (result.canceled || !result.assets?.length) {
-        return;
-      }
-
       const parents = getUploadParents(account.email);
-      const uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-      let uploaded = 0;
+      const accessToken = account.accessToken;
 
-      for (const asset of result.assets) {
-        const file = asset as { uri: string; name: string; mimeType?: string };
-        const { uri, name } = file;
-        const blob = await uriToBlob(uri);
-
-        const metadata: { name: string; parents?: string[] } = { name };
-        if (parents) metadata.parents = parents;
-
-        const formData = new FormData();
-        formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-        formData.append('file', blob, name);
-
-        const res = await fetch(uploadUrl, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${account.accessToken}` },
-          body: formData,
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.setAttribute('webkitdirectory', '');
+        input.setAttribute('directory', '');
+        input.multiple = true;
+        input.style.display = 'none';
+        document.body.appendChild(input);
+        const files = await new Promise<File[]>((resolve) => {
+          input.onchange = () => {
+            const f = input.files ? Array.from(input.files) : [];
+            document.body.removeChild(input);
+            resolve(f);
+          };
+          input.click();
         });
+        if (files.length === 0) return;
 
-        if (res.ok) {
-          uploaded++;
+        const folderIdMap: Record<string, string> = {};
+        const getOrCreateFolder = async (pathParts: string[]): Promise<string> => {
+          const key = pathParts.join('/');
+          if (folderIdMap[key]) return folderIdMap[key];
+          const parent = pathParts.length > 1 ? await getOrCreateFolder(pathParts.slice(0, -1)) : (parents?.[0]);
+          const id = await createDriveFolder(accessToken, pathParts[pathParts.length - 1], parent);
+          folderIdMap[key] = id;
+          return id;
+        };
+
+        for (const file of files) {
+          const path = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+          const parts = path.split('/');
+          const fileName = parts.pop()!;
+          const parentId = parts.length > 0 ? await getOrCreateFolder(parts) : parents?.[0];
+          const metadata: { name: string; parents?: string[] } = { name: fileName };
+          if (parentId) metadata.parents = [parentId];
+          const formData = new FormData();
+          formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+          formData.append('file', file, fileName);
+          const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${accessToken}` },
+            body: formData,
+          });
+          if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+        }
+      } else {
+        const result = await DocumentPicker.getDocumentAsync({ multiple: true });
+        if (result.canceled || !result.assets?.length) return;
+        for (const asset of result.assets) {
+          const file = asset as { uri: string; name: string };
+          const blob = await uriToBlob(file.uri);
+          const metadata: { name: string; parents?: string[] } = { name: file.name };
+          if (parents) metadata.parents = parents;
+          const formData = new FormData();
+          formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+          formData.append('file', blob, file.name);
+          const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${accessToken}` },
+            body: formData,
+          });
+          if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
         }
       }
-
       setError(null);
       await loadCurrentFolder();
     } catch (error) {
-      console.error('Error during folder upload:', error);
-      setError(error instanceof Error ? error.message : 'An error occurred while uploading files.');
+      setError(error instanceof Error ? error.message : 'Upload failed');
     }
   };
 
   const resolveAccounts = async () => {
     let accounts = [...connectedAccountTokens];
-    if (accounts.length === 0 && response?.type === 'success' && response.params?.access_token) {
+    if (accounts.length === 0 && response?.type === 'success' && 'params' in response && response.params?.access_token) {
       const token = response.params.access_token;
       const identity = await fetchGoogleAccountIdentity(token);
       const { limit, usage } = await fetchDriveStorageQuota(token);
-      const entry = {
-        email: identity?.email || 'current',
-        name: identity?.name,
-        accessToken: token,
-        storageLimit: limit,
-        storageUsage: usage,
-      };
-      accounts = [entry];
+      accounts = [{ email: identity?.email || 'current', name: identity?.name, accessToken: token, storageLimit: limit, storageUsage: usage }];
       setConnectedAccountTokens(accounts);
     }
     return accounts;
@@ -421,205 +354,63 @@ const HomeScreen = () => {
 
   const handleUpload = async () => {
     const accounts = await resolveAccounts();
-    if (accounts.length === 0) {
-      setError('Connect a Google account first.');
-      return;
-    }
-    if (accounts.length === 1) {
-      performUpload(accounts[0]);
-      return;
-    }
+    if (accounts.length === 0) { setError('Connect a Google account first.'); return; }
+    if (accounts.length === 1) { performUpload(accounts[0]); return; }
     setShowUploadAccountPicker(true);
   };
 
   const handleUploadFolder = async () => {
     const accounts = await resolveAccounts();
-    if (accounts.length === 0) {
-      setError('Connect a Google account first.');
-      return;
-    }
-    if (accounts.length === 1) {
-      performUploadFolder(accounts[0]);
-      return;
-    }
+    if (accounts.length === 0) { setError('Connect a Google account first.'); return; }
+    if (accounts.length === 1) { performUploadFolder(accounts[0]); return; }
     setShowUploadFolderAccountPicker(true);
-  };
-
-  const uriToBlob = async (uri: string): Promise<Blob> => {
-    const response = await fetch(uri);
-    return await response.blob();
   };
 
   const deleteGoogleDriveFile = async (fileId: string, accountEmail?: string) => {
     try {
-      let accessToken: string | null = null;
-      if (accountEmail) {
-        const acc = connectedAccountTokens.find((a) => a.email === accountEmail);
-        accessToken = acc?.accessToken ?? null;
-      }
-      if (!accessToken && connectedAccountTokens[0]) {
-        accessToken = connectedAccountTokens[0].accessToken;
-      }
-      if (!accessToken && response?.type === 'success' && 'params' in response) {
-        accessToken = response.params?.access_token ?? null;
-      }
-      if (!accessToken) {
-        throw new Error('Authentication error.');
-      }
-
-      const deleteRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
-
+      let accessToken: string | null = accountEmail ? (connectedAccountTokens.find((a) => a.email === accountEmail)?.accessToken ?? null) : null;
+      if (!accessToken && connectedAccountTokens[0]) accessToken = connectedAccountTokens[0].accessToken;
+      if (!accessToken && response?.type === 'success' && 'params' in response) accessToken = response.params?.access_token ?? null;
+      if (!accessToken) throw new Error('Authentication error.');
+      const deleteRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } });
       if (deleteRes.ok) {
-        console.log('File deleted successfully.');
-        setUserInfo((prevFiles) => prevFiles.filter((file) => file.id !== fileId));
+        setUserInfo((prev) => prev.filter((f) => f.id !== fileId));
         await loadCurrentFolder();
         return;
       }
-
       if (deleteRes.status === 403) {
-        console.log('No permission to delete. Attempting to move to trash...');
-
         const trashRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
           method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ trashed: true }),
         });
-
         if (trashRes.ok) {
-          console.log('File moved to trash.');
-          setUserInfo((prevFiles) => prevFiles.filter((file) => file.id !== fileId));
+          setUserInfo((prev) => prev.filter((f) => f.id !== fileId));
           await loadCurrentFolder();
           return;
-        } else {
-          const trashError = await trashRes.text();
-          console.error('Failed to move to trash:', trashError);
-          throw new Error('Cannot delete or trash this file.');
         }
       }
-
-      const deleteError = await deleteRes.text();
-      console.error('Delete failed:', deleteError);
-      throw new Error('Cannot delete this file.');
+      throw new Error('Cannot delete');
     } catch (error) {
-      console.error('Error deleting file:', error);
-      setError(error instanceof Error ? error.message : 'Failed to delete file.');
+      setError(error instanceof Error ? error.message : 'Delete failed');
     }
   };
 
-  const handleSearchSubmit = () => {
-    setSearchQuery(searchText);
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadCurrentFolder();
+    setRefreshing(false);
   };
+
+  const handleDownload = (url: string) => Linking.openURL(url).catch(() => setError('Download failed'));
+  const handleSearchSubmit = () => setSearchQuery(searchText);
 
   const navigateIntoFolder = (item: GoogleDriveFile) => {
     if (!item.accountEmail) return;
-    setFolderStack((prev) => prev.concat({
-      accountEmail: item.accountEmail!,
-      folderId: item.id,
-      folderName: item.name,
-    }));
+    setFolderStack((prev) => prev.concat({ accountEmail: item.accountEmail!, folderId: item.id, folderName: item.name }));
   };
 
-  const renderFileItem = ({ item }: { item: GoogleDriveFile }) => {
-    const isFolder = item.mimeType === FOLDER_MIME;
-
-    if (isFolder) {
-      return (
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => navigateIntoFolder(item)}
-          style={{ borderRadius: 18 }}
-        >
-          <View style={{ borderRadius: 18 }}>
-            <BlurView
-              intensity={90}
-              tint="light"
-              style={[styles.fileItem, styles.folderItem, { width: CARD_WIDTH, height: CARD_HEIGHT, marginHorizontal: spaceBetween / 2 }]}
-            >
-              <MaterialCommunityIcons name="folder" size={48} color="#ffb74d" style={{ marginBottom: 8 }} />
-              <Text style={styles.fileName}>{item.name}</Text>
-              {item.accountEmail && (
-                <Text style={styles.accountText}>
-                  {item.accountName ? `${item.accountName} • ${item.accountEmail}` : item.accountEmail}
-                </Text>
-              )}
-              {item.modifiedTime && (
-                <Text style={styles.fileDate}>{new Date(item.modifiedTime).toLocaleDateString()}</Text>
-              )}
-              <Text style={styles.folderHint}>Tap to open</Text>
-            </BlurView>
-          </View>
-        </TouchableOpacity>
-      );
-    }
-
-    const handleOpenFile = () => {
-      let openUrl = '';
-      if (item.mimeType?.includes('document')) {
-        openUrl = `https://docs.google.com/document/d/${item.id}/edit`;
-      } else if (item.mimeType?.includes('spreadsheet')) {
-        openUrl = `https://docs.google.com/spreadsheets/d/${item.id}/edit`;
-      } else if (item.mimeType?.includes('presentation')) {
-        openUrl = `https://docs.google.com/presentation/d/${item.id}/edit`;
-      } else {
-        openUrl = `https://drive.google.com/file/d/${item.id}/view`;
-      }
-      Linking.openURL(openUrl).catch((err) => {
-        console.error('Error opening file:', err);
-        setError('Failed to open the file');
-      });
-    };
-
-    return (
-      <View style={{ borderRadius: 18 }}>
-        <BlurView intensity={90} tint="light" style={[styles.fileItem, { width: CARD_WIDTH, height: CARD_HEIGHT, marginHorizontal: spaceBetween / 2 }]}>
-          <Text style={styles.fileName}>{item.name}</Text>
-          {item.accountEmail && (
-            <Text style={styles.accountText}>
-              {item.accountName ? `${item.accountName} • ${item.accountEmail}` : item.accountEmail}
-            </Text>
-          )}
-          {item.modifiedTime && (
-            <Text style={styles.fileDate}>{new Date(item.modifiedTime).toLocaleDateString()}</Text>
-          )}
-          <View style={styles.fileActions}>
-            {item.webContentLink && (
-              <TouchableOpacity onPress={() => handleDownload(item.webContentLink!)}>
-                <Text style={styles.downloadText}>Download</Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity onPress={() => handleOpenFile()}>
-              <Text style={styles.openText}>Open</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => deleteGoogleDriveFile(item.id, item.accountEmail)}>
-              <Text style={styles.deleteText}>Delete</Text>
-            </TouchableOpacity>
-          </View>
-        </BlurView>
-      </View>
-    );
-  };
-
-  const uniqueAccounts = React.useMemo(() => {
-    const seen = new Set<string>();
-    const accounts: { email: string; name?: string }[] = [];
-    userInfo.forEach((f) => {
-      if (f.accountEmail && !seen.has(f.accountEmail)) {
-        seen.add(f.accountEmail);
-        accounts.push({ email: f.accountEmail, name: f.accountName });
-      }
-    });
-    return accounts;
-  }, [userInfo]);
-
-  const getFileTypeCategory = (mimeType?: string): string => {
+  const getFileTypeCategory = (mimeType?: string) => {
     if (!mimeType) return 'other';
     if (mimeType.includes('document') || mimeType.includes('word')) return 'document';
     if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) return 'spreadsheet';
@@ -631,153 +422,75 @@ const HomeScreen = () => {
     return 'other';
   };
 
-  const FILE_TYPE_LABELS: Record<string, string> = {
-    document: 'Documents',
-    spreadsheet: 'Spreadsheets',
-    presentation: 'Presentations',
-    image: 'Images',
-    video: 'Videos',
-    pdf: 'PDFs',
-    folder: 'Folders',
-    other: 'Other',
-  };
+  const uniqueAccounts = React.useMemo(() => {
+    const seen = new Set<string>();
+    const accs: { email: string; name?: string }[] = [];
+    userInfo.forEach((f) => {
+      if (f.accountEmail && !seen.has(f.accountEmail)) { seen.add(f.accountEmail); accs.push({ email: f.accountEmail, name: f.accountName }); }
+    });
+    return accs;
+  }, [userInfo]);
 
   const filteredFiles = userInfo
-    .filter((file) => {
-      if (!file.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-      if (filterAccount && file.accountEmail !== filterAccount) return false;
-      if (filterFileType && getFileTypeCategory(file.mimeType) !== filterFileType) return false;
+    .filter((f) => {
+      if (!f.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      if (filterAccount && f.accountEmail !== filterAccount) return false;
+      if (filterFileType && getFileTypeCategory(f.mimeType) !== filterFileType) return false;
       return true;
     })
     .sort((a, b) => {
-      const aIsFolder = a.mimeType === FOLDER_MIME;
-      const bIsFolder = b.mimeType === FOLDER_MIME;
-      if (aIsFolder && !bIsFolder) return -1;
-      if (!aIsFolder && bIsFolder) return 1;
-      const dateA = a.modifiedTime ? new Date(a.modifiedTime).getTime() : 0;
-      const dateB = b.modifiedTime ? new Date(b.modifiedTime).getTime() : 0;
-      return dateB - dateA; // newest first
+      const aFolder = a.mimeType === FOLDER_MIME;
+      const bFolder = b.mimeType === FOLDER_MIME;
+      if (aFolder && !bFolder) return -1;
+      if (!aFolder && bFolder) return 1;
+      const dA = a.modifiedTime ? new Date(a.modifiedTime).getTime() : 0;
+      const dB = b.modifiedTime ? new Date(b.modifiedTime).getTime() : 0;
+      return dB - dA;
     });
 
-  const renderFilterChip = (label: string, isActive: boolean, onPress: () => void) => (
-    <TouchableOpacity
-      key={label}
-      style={[styles.filterChip, isActive && styles.filterChipActive]}
-      onPress={onPress}
-      activeOpacity={0.7}
-    >
-      <Text style={[styles.filterChipText, isActive && styles.filterChipTextActive]} numberOfLines={1}>
-        {label}
-      </Text>
-    </TouchableOpacity>
-  );
+  const FILE_TYPE_LABELS: Record<string, string> = {
+    document: 'Documents', spreadsheet: 'Spreadsheets', presentation: 'Presentations',
+    image: 'Images', video: 'Videos', pdf: 'PDFs', folder: 'Folders', other: 'Other',
+  };
 
-  const renderHeader = () => (
-    <View style={styles.headerContainer}>
-      {loading && !userInfo.length ? (
-        <Text>Loading your files...</Text>
-      ) : (
-        <>
-          <Text style={styles.welcomeText}>Your files</Text>
-          <View style={styles.searchRow}>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search files"
-              value={searchText}
-              onChangeText={setSearchText}
-              onSubmitEditing={handleSearchSubmit}
-              returnKeyType="search"
-            />
-            <TouchableOpacity style={styles.searchButton} onPress={handleSearchSubmit}>
-              <Text style={styles.buttonText}>Search</Text>
-            </TouchableOpacity>
-            <View style={{ flex: 1 }} />
-            <TouchableOpacity style={styles.uploadButton} onPress={handleUpload}>
-              <Text style={styles.buttonText}>Upload</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.uploadButton, { marginLeft: 12 }]} onPress={handleUploadFolder}>
-              <Text style={styles.buttonText}>Upload folder</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.uploadButton, { marginLeft: 12 }]}
-              onPress={() => {
-                if (isRequestReady) {
-                  promptAsync();
-                }
-              }}
-            >
-              <Text style={styles.buttonText}>Add Google Account</Text>
-            </TouchableOpacity>
+  const renderFileItem = ({ item }: { item: GoogleDriveFile }) => {
+    const isFolder = item.mimeType === FOLDER_MIME;
+    if (isFolder) {
+      return (
+        <TouchableOpacity activeOpacity={0.7} onPress={() => navigateIntoFolder(item)} style={{ borderRadius: 18 }}>
+          <BlurView intensity={90} tint="light" style={[styles.fileItem, { width: CARD_WIDTH, height: CARD_HEIGHT, marginHorizontal: spaceBetween / 2 }]}>
+            <MaterialCommunityIcons name="folder" size={48} color="#ffb74d" style={{ marginBottom: 8 }} />
+            <Text style={styles.fileName}>{item.name}</Text>
+            {item.accountEmail && <Text style={styles.accountText}>{item.accountName ? `${item.accountName} • ${item.accountEmail}` : item.accountEmail}</Text>}
+            {item.modifiedTime && <Text style={styles.fileDate}>{new Date(item.modifiedTime).toLocaleDateString()}</Text>}
+            <Text style={styles.folderHint}>Tap to open</Text>
+          </BlurView>
+        </TouchableOpacity>
+      );
+    }
+    const handleOpenFile = () => {
+      let url = '';
+      if (item.mimeType?.includes('document')) url = `https://docs.google.com/document/d/${item.id}/edit`;
+      else if (item.mimeType?.includes('spreadsheet')) url = `https://docs.google.com/spreadsheets/d/${item.id}/edit`;
+      else if (item.mimeType?.includes('presentation')) url = `https://docs.google.com/presentation/d/${item.id}/edit`;
+      else url = `https://drive.google.com/file/d/${item.id}/view`;
+      Linking.openURL(url).catch(() => setError('Failed to open'));
+    };
+    return (
+      <View style={{ borderRadius: 18 }}>
+        <BlurView intensity={90} tint="light" style={[styles.fileItem, { width: CARD_WIDTH, height: CARD_HEIGHT, marginHorizontal: spaceBetween / 2 }]}>
+          <Text style={styles.fileName}>{item.name}</Text>
+          {item.accountEmail && <Text style={styles.accountText}>{item.accountName ? `${item.accountName} • ${item.accountEmail}` : item.accountEmail}</Text>}
+          {item.modifiedTime && <Text style={styles.fileDate}>{new Date(item.modifiedTime).toLocaleDateString()}</Text>}
+          <View style={styles.fileActions}>
+            {item.webContentLink && <TouchableOpacity onPress={() => handleDownload(item.webContentLink!)}><Text style={styles.downloadText}>Download</Text></TouchableOpacity>}
+            <TouchableOpacity onPress={handleOpenFile}><Text style={styles.openText}>Open</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => deleteGoogleDriveFile(item.id, item.accountEmail)}><Text style={styles.deleteText}>Delete</Text></TouchableOpacity>
           </View>
-
-          <Text style={styles.filterSectionLabel}>Filter by account</Text>
-          <View style={styles.filterRow}>
-            {renderFilterChip('All accounts', filterAccount === null, () => setFilterAccount(null))}
-            {uniqueAccounts.map((acc) => (
-              <TouchableOpacity
-                key={acc.email}
-                style={[styles.filterChip, filterAccount === acc.email && styles.filterChipActive]}
-                onPress={() => setFilterAccount(acc.email)}
-                activeOpacity={0.7}
-              >
-                <Text
-                  style={[
-                    styles.filterChipText,
-                    filterAccount === acc.email && styles.filterChipTextActive,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {acc.name || acc.email}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          {folderStack.length > 0 && (
-            <View style={styles.breadcrumbContainer}>
-              <TouchableOpacity onPress={() => setFolderStack([])} style={styles.breadcrumbItem}>
-                <MaterialCommunityIcons name="folder-multiple" size={18} color="#002b45" />
-                <Text style={styles.breadcrumbText}>All files</Text>
-              </TouchableOpacity>
-              {folderStack.map((crumb, idx) => (
-                <View key={crumb.folderId} style={styles.breadcrumbRow}>
-                  <Text style={styles.breadcrumbSeparator}> › </Text>
-                  <TouchableOpacity
-                    onPress={() => setFolderStack((prev) => prev.slice(0, idx + 1))}
-                    style={styles.breadcrumbItem}
-                  >
-                    <Text style={styles.breadcrumbText}>{crumb.folderName}</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </View>
-          )}
-
-          <Text style={styles.filterSectionLabel}>Filter by file type</Text>
-          <View style={[styles.filterRow, { marginBottom: 8 }]}>
-            {renderFilterChip('All types', filterFileType === null, () => setFilterFileType(null))}
-            {(['document', 'spreadsheet', 'presentation', 'image', 'video', 'pdf', 'other'] as const).map((type) => (
-              <TouchableOpacity
-                key={type}
-                style={[styles.filterChip, filterFileType === type && styles.filterChipActive]}
-                onPress={() => setFilterFileType(type)}
-                activeOpacity={0.7}
-              >
-                <Text
-                  style={[
-                    styles.filterChipText,
-                    filterFileType === type && styles.filterChipTextActive,
-                  ]}
-                >
-                  {FILE_TYPE_LABELS[type]}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </>
-      )}
-    </View>
-  );
+        </BlurView>
+      </View>
+    );
+  };
 
   const accountWithMostFreeSpace = React.useMemo(() => {
     if (connectedAccountTokens.length === 0) return null;
@@ -791,111 +504,25 @@ const HomeScreen = () => {
     return best.acc;
   }, [connectedAccountTokens]);
 
-  const uploadFolderAccountPickerModal = (
-    <Modal
-      visible={showUploadFolderAccountPicker}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setShowUploadFolderAccountPicker(false)}
-    >
-      <Pressable
-        style={styles.modalOverlay}
-        onPress={() => setShowUploadFolderAccountPicker(false)}
-      >
+  const uploadModal = (title: string, show: boolean, setShow: (v: boolean) => void, onPick: (acc: typeof connectedAccountTokens[0]) => void) => (
+    <Modal visible={show} transparent animationType="fade" onRequestClose={() => setShow(false)}>
+      <Pressable style={styles.modalOverlay} onPress={() => setShow(false)}>
         <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
-          <Text style={styles.modalTitle}>Choose account to upload folder to</Text>
+          <Text style={styles.modalTitle}>{title}</Text>
           {accountWithMostFreeSpace && (
-            <TouchableOpacity
-              style={styles.modalMostFreeButton}
-              onPress={() => performUploadFolder(accountWithMostFreeSpace)}
-              activeOpacity={0.7}
-            >
+            <TouchableOpacity style={styles.modalMostFreeButton} onPress={() => onPick(accountWithMostFreeSpace)} activeOpacity={0.7}>
               <Text style={styles.modalMostFreeText}>Upload to account with most free space</Text>
-              <Text style={styles.modalMostFreeSubtext}>
-                {accountWithMostFreeSpace.name || accountWithMostFreeSpace.email} •{' '}
-                {formatStorageFree(
-                  accountWithMostFreeSpace.storageLimit,
-                  accountWithMostFreeSpace.storageUsage
-                )}
-              </Text>
+              <Text style={styles.modalMostFreeSubtext}>{accountWithMostFreeSpace.name || accountWithMostFreeSpace.email} • {formatStorageFree(accountWithMostFreeSpace.storageLimit, accountWithMostFreeSpace.storageUsage)}</Text>
             </TouchableOpacity>
           )}
           {connectedAccountTokens.map((acc) => (
-            <TouchableOpacity
-              key={acc.email}
-              style={styles.modalAccountButton}
-              onPress={() => performUploadFolder(acc)}
-              activeOpacity={0.7}
-            >
+            <TouchableOpacity key={acc.email} style={styles.modalAccountButton} onPress={() => onPick(acc)} activeOpacity={0.7}>
               <Text style={styles.modalAccountText}>{acc.name || acc.email}</Text>
-              {acc.name && acc.email && (
-                <Text style={styles.modalAccountEmail}>{acc.email}</Text>
-              )}
-              <Text style={styles.modalStorageText}>
-                {formatStorageFree(acc.storageLimit, acc.storageUsage)}
-              </Text>
+              {acc.name && acc.email && <Text style={styles.modalAccountEmail}>{acc.email}</Text>}
+              <Text style={styles.modalStorageText}>{formatStorageFree(acc.storageLimit, acc.storageUsage)}</Text>
             </TouchableOpacity>
           ))}
-          <TouchableOpacity
-            style={styles.modalCancelButton}
-            onPress={() => setShowUploadFolderAccountPicker(false)}
-          >
-            <Text style={styles.modalCancelText}>Cancel</Text>
-          </TouchableOpacity>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-
-  const uploadAccountPickerModal = (
-    <Modal
-      visible={showUploadAccountPicker}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setShowUploadAccountPicker(false)}
-    >
-      <Pressable
-        style={styles.modalOverlay}
-        onPress={() => setShowUploadAccountPicker(false)}
-      >
-        <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
-          <Text style={styles.modalTitle}>Choose account to upload to</Text>
-          {accountWithMostFreeSpace && (
-            <TouchableOpacity
-              style={styles.modalMostFreeButton}
-              onPress={() => performUpload(accountWithMostFreeSpace)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.modalMostFreeText}>Upload to account with most free space</Text>
-              <Text style={styles.modalMostFreeSubtext}>
-                {accountWithMostFreeSpace.name || accountWithMostFreeSpace.email} •{' '}
-                {formatStorageFree(
-                  accountWithMostFreeSpace.storageLimit,
-                  accountWithMostFreeSpace.storageUsage
-                )}
-              </Text>
-            </TouchableOpacity>
-          )}
-          {connectedAccountTokens.map((acc) => (
-            <TouchableOpacity
-              key={acc.email}
-              style={styles.modalAccountButton}
-              onPress={() => performUpload(acc)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.modalAccountText}>{acc.name || acc.email}</Text>
-              {acc.name && acc.email && (
-                <Text style={styles.modalAccountEmail}>{acc.email}</Text>
-              )}
-              <Text style={styles.modalStorageText}>
-                {formatStorageFree(acc.storageLimit, acc.storageUsage)}
-              </Text>
-            </TouchableOpacity>
-          ))}
-          <TouchableOpacity
-            style={styles.modalCancelButton}
-            onPress={() => setShowUploadAccountPicker(false)}
-          >
+          <TouchableOpacity style={styles.modalCancelButton} onPress={() => setShow(false)}>
             <Text style={styles.modalCancelText}>Cancel</Text>
           </TouchableOpacity>
         </Pressable>
@@ -907,39 +534,74 @@ const HomeScreen = () => {
     <View style={styles.emptyFolderContainer}>
       <MaterialCommunityIcons name="folder-open-outline" size={64} color="#002b45" style={{ opacity: 0.6 }} />
       <Text style={styles.emptyFolderText}>This folder is empty</Text>
-      <TouchableOpacity
-        style={styles.goBackButton}
-        onPress={() => setFolderStack((prev) => prev.slice(0, -1))}
-      >
+      <TouchableOpacity style={styles.goBackButton} onPress={() => setFolderStack((prev) => prev.slice(0, -1))}>
         <MaterialCommunityIcons name="arrow-left" size={20} color="#fff" style={{ marginRight: 8 }} />
         <Text style={styles.goBackButtonText}>Go back</Text>
       </TouchableOpacity>
     </View>
   ) : null;
 
-  // On web: use ScrollView + mapped items (avoids FlatList scroll bugs on RN Web)
+  const renderHeader = () => (
+    <View style={styles.headerContainer}>
+      {loading && !userInfo.length ? <Text>Loading your files...</Text> : (
+        <>
+          <Text style={styles.welcomeText}>Your files</Text>
+          <View style={styles.searchRow}>
+            <TouchableOpacity style={styles.refreshButton} onPress={onRefresh} disabled={refreshing || loading}>
+              <MaterialCommunityIcons name="refresh" size={18} color="#fff" />
+            </TouchableOpacity>
+            <TextInput style={styles.searchInput} placeholder="Search files" value={searchText} onChangeText={setSearchText} onSubmitEditing={handleSearchSubmit} returnKeyType="search" />
+            <TouchableOpacity style={styles.searchButton} onPress={handleSearchSubmit}><Text style={styles.buttonText}>Search</Text></TouchableOpacity>
+            <View style={{ flex: 1 }} />
+            <TouchableOpacity style={styles.uploadButton} onPress={handleUpload}><Text style={styles.buttonText}>Upload</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.uploadButton, { marginLeft: 12 }]} onPress={handleUploadFolder}><Text style={styles.buttonText}>Upload folder</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.uploadButton, { marginLeft: 12 }]} onPress={() => isRequestReady && promptAsync()}><Text style={styles.buttonText}>Add Google Account</Text></TouchableOpacity>
+          </View>
+          <Text style={styles.filterSectionLabel}>Filter by account</Text>
+          <View style={styles.filterRow}>
+            <TouchableOpacity style={[styles.filterChip, !filterAccount && styles.filterChipActive]} onPress={() => setFilterAccount(null)}><Text style={[styles.filterChipText, !filterAccount && styles.filterChipTextActive]}>All accounts</Text></TouchableOpacity>
+            {uniqueAccounts.map((acc) => (
+              <TouchableOpacity key={acc.email} style={[styles.filterChip, filterAccount === acc.email && styles.filterChipActive]} onPress={() => setFilterAccount(acc.email)}><Text style={[styles.filterChipText, filterAccount === acc.email && styles.filterChipTextActive]}>{acc.name || acc.email}</Text></TouchableOpacity>
+            ))}
+          </View>
+          {folderStack.length > 0 && (
+            <View style={styles.breadcrumbContainer}>
+              <TouchableOpacity onPress={() => setFolderStack([])} style={styles.breadcrumbItem}>
+                <MaterialCommunityIcons name="folder-multiple" size={18} color="#002b45" />
+                <Text style={styles.breadcrumbText}>All files</Text>
+              </TouchableOpacity>
+              {folderStack.map((crumb, idx) => (
+                <View key={crumb.folderId} style={styles.breadcrumbRow}>
+                  <Text style={styles.breadcrumbSeparator}> › </Text>
+                  <TouchableOpacity onPress={() => setFolderStack((prev) => prev.slice(0, idx + 1))} style={styles.breadcrumbItem}><Text style={styles.breadcrumbText}>{crumb.folderName}</Text></TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          )}
+          <Text style={styles.filterSectionLabel}>Filter by file type</Text>
+          <View style={[styles.filterRow, { marginBottom: 8 }]}>
+            <TouchableOpacity style={[styles.filterChip, !filterFileType && styles.filterChipActive]} onPress={() => setFilterFileType(null)}><Text style={[styles.filterChipText, !filterFileType && styles.filterChipTextActive]}>All types</Text></TouchableOpacity>
+            {(['document', 'spreadsheet', 'presentation', 'image', 'video', 'pdf', 'other'] as const).map((type) => (
+              <TouchableOpacity key={type} style={[styles.filterChip, filterFileType === type && styles.filterChipActive]} onPress={() => setFilterFileType(type)}><Text style={[styles.filterChipText, filterFileType === type && styles.filterChipTextActive]}>{FILE_TYPE_LABELS[type]}</Text></TouchableOpacity>
+            ))}
+          </View>
+        </>
+      )}
+    </View>
+  );
+
   if (Platform.OS === 'web') {
     return (
       <LinearGradient colors={['#4facfe', '#00f2fe']} style={{ flex: 1 }}>
-        {uploadAccountPickerModal}
-        {uploadFolderAccountPickerModal}
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{ paddingBottom: 40 }}
-          showsVerticalScrollIndicator={true}
-        >
+        {uploadModal('Choose account to upload to', showUploadAccountPicker, setShowUploadAccountPicker, performUpload)}
+        {uploadModal('Choose account to upload folder to', showUploadFolderAccountPicker, setShowUploadFolderAccountPicker, performUploadFolder)}
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator>
           {renderHeader()}
           {emptyFolderContent}
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start' }}>
-            {filteredFiles.map((file) => (
-              <View key={file.id}>{renderFileItem({ item: file })}</View>
-            ))}
+            {filteredFiles.map((file) => <View key={file.id}>{renderFileItem({ item: file })}</View>)}
           </View>
-          {loading && (
-            <View style={{ marginTop: 16, alignItems: 'center' }}>
-              <ActivityIndicator size="small" color="#0000ff" />
-            </View>
-          )}
+          {loading && <View style={{ marginTop: 16, alignItems: 'center' }}><ActivityIndicator size="small" color="#0000ff" /></View>}
         </ScrollView>
       </LinearGradient>
     );
@@ -947,8 +609,8 @@ const HomeScreen = () => {
 
   return (
     <LinearGradient colors={['#4facfe', '#00f2fe']} style={{ flex: 1 }}>
-      {uploadAccountPickerModal}
-      {uploadFolderAccountPickerModal}
+      {uploadModal('Choose account to upload to', showUploadAccountPicker, setShowUploadAccountPicker, performUpload)}
+      {uploadModal('Choose account to upload folder to', showUploadFolderAccountPicker, setShowUploadFolderAccountPicker, performUploadFolder)}
       <FlatList
         style={{ flex: 1 }}
         data={filteredFiles}
@@ -961,306 +623,65 @@ const HomeScreen = () => {
         ListFooterComponent={loading ? <ActivityIndicator size="small" color="#0000ff" /> : null}
         contentContainerStyle={{ paddingBottom: 40, paddingHorizontal: 0 }}
         keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={true}
+        showsVerticalScrollIndicator
       />
     </LinearGradient>
   );
 };
 
-
 const styles = StyleSheet.create({
-    headerContainer: {
-        padding: 20,
-        paddingTop: 50,
-    },
-    welcomeText: {
-        fontSize: 28,
-        fontWeight: '800',
-        marginBottom: 24,
-        color: '#002b45', // deep navy for contrast
-        letterSpacing: 0.6,
-    },
-    loadingText: {
-        fontSize: 18,
-        color: '#002b45',
-        fontWeight: '500',
-    },
-    searchRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        marginBottom: 24,
-    },
-    searchInput: {
-        height: 48,
-        backgroundColor: 'rgba(255,255,255,0.95)',
-        borderRadius: 25,
-        paddingHorizontal: 18,
-        color: '#002b45',
-        fontSize: 16,
-        flex: 0.45,
-        shadowColor: '#000',
-        shadowOpacity: 0.08,
-        shadowRadius: 5,
-        shadowOffset: { width: 0, height: 2 },
-    },
-    searchButton: {
-        backgroundColor: '#0280da',
-        paddingVertical: 12,
-        paddingHorizontal: 22,
-        borderRadius: 25,
-        marginLeft: 12,
-        elevation: 4,
-    },
-    uploadButton: {
-        backgroundColor: '#0280da',
-        paddingVertical: 12,
-        paddingHorizontal: 28,
-        borderRadius: 25,
-        elevation: 4,
-    },
-    buttonText: {
-        color: '#fff',
-        fontSize: 16,
-        fontWeight: '700',
-        letterSpacing: 0.4,
-        textAlign: "center",
-    },
-    filterSectionLabel: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#002b45',
-        marginTop: 16,
-        marginBottom: 8,
-    },
-    filterRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-    },
-    filterChip: {
-        paddingVertical: 8,
-        paddingHorizontal: 14,
-        borderRadius: 20,
-        backgroundColor: 'rgba(255,255,255,0.7)',
-        marginRight: 8,
-        marginBottom: 8,
-    },
-    filterChipActive: {
-        backgroundColor: '#0280da',
-    },
-    filterChipText: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#002b45',
-    },
-    filterChipTextActive: {
-        color: '#fff',
-    },
-    breadcrumbContainer: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        marginTop: 12,
-        marginBottom: 12,
-    },
-    breadcrumbRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    breadcrumbItem: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingVertical: 4,
-        paddingHorizontal: 8,
-        borderRadius: 8,
-        backgroundColor: 'rgba(255,255,255,0.6)',
-    },
-    breadcrumbText: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#002b45',
-        marginLeft: 4,
-    },
-    breadcrumbSeparator: {
-        fontSize: 16,
-        color: '#002b45',
-        fontWeight: '700',
-    },
-    folderItem: {},
-    folderHint: {
-        fontSize: 12,
-        color: '#336699',
-        marginTop: 4,
-    },
-    emptyFolderContainer: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingVertical: 48,
-        paddingHorizontal: 24,
-    },
-    emptyFolderText: {
-        fontSize: 18,
-        fontWeight: '600',
-        color: '#002b45',
-        marginTop: 16,
-    },
-    goBackButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: '#0280da',
-        paddingVertical: 12,
-        paddingHorizontal: 24,
-        borderRadius: 25,
-        marginTop: 20,
-    },
-    goBackButtonText: {
-        color: '#fff',
-        fontSize: 16,
-        fontWeight: '700',
-    },
-    listContainer: {
-        paddingBottom: 20,
-        // justifyContent: "center",
-    },
-    fileItem: {
-        // width: fileItemWidth,
-        // height: fileItemHeight,
-        // marginHorizontal: (screenWidth-(Math.floor((screenWidth*0.95) / fileItemWidth)*fileItemWidth))/16,
-        margin: 10,
-        borderRadius: 18,
-        backgroundColor: 'rgba(255,255,255,0.8)', // glassy look
-        alignItems: 'center',
-        justifyContent: 'center',
-        shadowColor: '#000',
-        shadowOpacity: 0.12,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 4 },
-    },
-    fileName: {
-        fontSize: 15,
-        fontWeight: '600',
-        color: '#00334d',
-        textAlign: 'center',
-        marginTop: 8,
-    },
-    accountText: {
-        fontSize: 12,
-        color: '#336699',
-        marginTop: 4,
-        textAlign: 'center',
-    },
-    fileDate: {
-        fontSize: 12,
-        color: '#555',
-        marginTop: 2,
-    },
-    downloadText: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#4cafef',
-        paddingHorizontal: 12,
-        paddingVertical: 4,
-        backgroundColor: 'rgba(255,255,255,0.2)',
-        borderRadius: 12,
-    },
-    deleteText: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#ff5252',
-        paddingHorizontal: 12,
-        paddingVertical: 4,
-        backgroundColor: 'rgba(255,255,255,0.2)',
-        borderRadius: 12,
-    },
-    openText: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#00bcd4',
-        paddingHorizontal: 12,
-        paddingVertical: 4,
-        backgroundColor: 'rgba(255,255,255,0.2)',
-        borderRadius: 12,
-    },
-    fileActions: {
-        flexDirection: 'row',
-        justifyContent: 'space-around',
-        width: '100%',
-        marginTop: 10,
-    },
-    modalOverlay: {
-        flex: 1,
-        backgroundColor: 'rgba(0,0,0,0.5)',
-        justifyContent: 'center',
-        alignItems: 'center',
-        padding: 20,
-    },
-    modalContent: {
-        backgroundColor: '#fff',
-        borderRadius: 16,
-        padding: 24,
-        width: '100%',
-        maxWidth: 360,
-    },
-    modalTitle: {
-        fontSize: 18,
-        fontWeight: '700',
-        color: '#002b45',
-        marginBottom: 16,
-        textAlign: 'center',
-    },
-    modalMostFreeButton: {
-        backgroundColor: 'rgba(2,128,218,0.2)',
-        borderWidth: 2,
-        borderColor: '#0280da',
-        paddingVertical: 14,
-        paddingHorizontal: 16,
-        borderRadius: 12,
-        marginBottom: 16,
-    },
-    modalMostFreeText: {
-        fontSize: 16,
-        fontWeight: '700',
-        color: '#0280da',
-    },
-    modalMostFreeSubtext: {
-        fontSize: 13,
-        color: '#0280da',
-        marginTop: 4,
-        opacity: 0.9,
-    },
-    modalAccountButton: {
-        backgroundColor: 'rgba(2,128,218,0.15)',
-        paddingVertical: 14,
-        paddingHorizontal: 16,
-        borderRadius: 12,
-        marginBottom: 10,
-    },
-    modalAccountText: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: '#002b45',
-    },
-    modalAccountEmail: {
-        fontSize: 13,
-        color: '#666',
-        marginTop: 2,
-    },
-    modalStorageText: {
-        fontSize: 13,
-        color: '#0280da',
-        fontWeight: '600',
-        marginTop: 4,
-    },
-    modalCancelButton: {
-        marginTop: 8,
-        paddingVertical: 12,
-        alignItems: 'center',
-    },
-    modalCancelText: {
-        fontSize: 16,
-        color: '#666',
-        fontWeight: '600',
-    },
+  headerContainer: { padding: 20, paddingTop: 50 },
+  welcomeText: { fontSize: 28, fontWeight: '800', marginBottom: 24, color: '#002b45', letterSpacing: 0.6 },
+  searchRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 24 },
+  refreshButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#0280da',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  searchInput: { height: 48, flex: 0.45, backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 25, paddingHorizontal: 18, color: '#002b45', fontSize: 16 },
+  searchButton: { backgroundColor: '#0280da', paddingVertical: 12, paddingHorizontal: 22, borderRadius: 25, marginLeft: 12, elevation: 4 },
+  uploadButton: { backgroundColor: '#0280da', paddingVertical: 12, paddingHorizontal: 28, borderRadius: 25, elevation: 4 },
+  buttonText: { color: '#fff', fontSize: 16, fontWeight: '700', letterSpacing: 0.4, textAlign: 'center' },
+  filterSectionLabel: { fontSize: 14, fontWeight: '600', color: '#002b45', marginTop: 16, marginBottom: 8 },
+  filterRow: { flexDirection: 'row', flexWrap: 'wrap' },
+  filterChip: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.7)', marginRight: 8, marginBottom: 8 },
+  filterChipActive: { backgroundColor: '#0280da' },
+  filterChipText: { fontSize: 14, fontWeight: '600', color: '#002b45' },
+  filterChipTextActive: { color: '#fff' },
+  breadcrumbContainer: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', marginTop: 12, marginBottom: 12 },
+  breadcrumbRow: { flexDirection: 'row', alignItems: 'center' },
+  breadcrumbItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.6)' },
+  breadcrumbText: { fontSize: 14, fontWeight: '600', color: '#002b45', marginLeft: 4 },
+  breadcrumbSeparator: { fontSize: 16, color: '#002b45', fontWeight: '700' },
+  folderHint: { fontSize: 12, color: '#336699', marginTop: 4 },
+  emptyFolderContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48, paddingHorizontal: 24 },
+  emptyFolderText: { fontSize: 18, fontWeight: '600', color: '#002b45', marginTop: 16 },
+  goBackButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0280da', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 25, marginTop: 20 },
+  goBackButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  modalContent: { backgroundColor: '#fff', borderRadius: 16, padding: 24, width: '90%', maxWidth: 400 },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: '#002b45', marginBottom: 16 },
+  modalMostFreeButton: { backgroundColor: '#e3f2fd', padding: 16, borderRadius: 12, marginBottom: 12 },
+  modalMostFreeText: { fontSize: 16, fontWeight: '600', color: '#0280da' },
+  modalMostFreeSubtext: { fontSize: 12, color: '#666', marginTop: 4 },
+  modalAccountButton: { padding: 16, borderBottomWidth: 1, borderBottomColor: '#eee' },
+  modalAccountText: { fontSize: 16, fontWeight: '600', color: '#002b45' },
+  modalAccountEmail: { fontSize: 12, color: '#666', marginTop: 2 },
+  modalStorageText: { fontSize: 12, color: '#0280da', marginTop: 4 },
+  modalCancelButton: { marginTop: 16, padding: 12, alignItems: 'center' },
+  modalCancelText: { fontSize: 16, color: '#666' },
+  fileItem: { margin: 10, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.8)', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
+  fileName: { fontSize: 15, fontWeight: '600', color: '#00334d', textAlign: 'center', marginTop: 8 },
+  accountText: { fontSize: 12, color: '#336699', marginTop: 4 },
+  fileDate: { fontSize: 12, color: '#555', marginTop: 2 },
+  fileActions: { flexDirection: 'row', justifyContent: 'space-around', width: '100%', marginTop: 10 },
+  downloadText: { fontSize: 14, fontWeight: '600', color: '#4cafef', paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 12 },
+  openText: { fontSize: 14, fontWeight: '600', color: '#00bcd4', paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 12 },
+  deleteText: { fontSize: 14, fontWeight: '600', color: '#ff5252', paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 12 },
 });
-
 
 export default HomeScreen;
