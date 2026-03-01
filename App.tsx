@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { LogBox, StyleSheet } from 'react-native';
+import { LogBox, StyleSheet, Platform } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { RootStackNavigatorParamsList } from './RootStackNavigator';
@@ -19,6 +19,12 @@ import { onAuthStateChanged, setPersistence, browserLocalPersistence } from 'fir
 import { authentication } from './src/Firebase/config';
 
 LogBox.ignoreAllLogs();
+
+if (Platform.OS === 'web' && typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.textContent = 'html, body { overflow: auto !important; height: 100%; } #root { min-height: 100%; }';
+  document.head.appendChild(style);
+}
 
 GoogleSignin.configure({
     scopes: ['https://www.googleapis.com/auth/drive.readonly'],

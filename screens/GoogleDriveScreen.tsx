@@ -37,6 +37,8 @@ interface GoogleDriveFile {
   webContentLink?: string;
   accountEmail?: string;
   accountName?: string;
+  size?: string;
+  starred?: boolean;
 }
 
 interface GoogleDriveResponse {
@@ -90,11 +92,14 @@ const HomeScreen = () => {
     return () => sub?.remove();
   }, []);
 
-  const CARD_WIDTH = Math.max(screenWidthState / 8, 225);
-  const CARD_HEIGHT = Math.max(screenWidthState / 7.5, 300);
-  const numColumns = Math.max(1, Math.floor(screenWidthState * 0.95 / CARD_WIDTH));
-  const totalCardsWidth = numColumns * CARD_WIDTH;
-  const spaceBetween = (screenWidthState - totalCardsWidth) / numColumns;
+  const HORIZ_PADDING = 16;
+  const GAP = 10;
+  const minCardWidth = 260;
+  const contentWidth = screenWidthState - HORIZ_PADDING * 2;
+  const numColumns = Math.max(1, Math.floor((contentWidth + GAP) / (minCardWidth + GAP)));
+  const CARD_WIDTH = (contentWidth - (numColumns - 1) * GAP) / numColumns;
+  const CARD_HEIGHT = Math.max(CARD_WIDTH * 1.15, 240);
+  const spaceBetween = GAP / 2;
 
   useEffect(() => setIsRequestReady(!!request), [request]);
 
@@ -136,19 +141,28 @@ const HomeScreen = () => {
   const fetchFilesInFolder = async (accessToken: string, account: GoogleAccountIdentity, parentId: string): Promise<GoogleDriveFile[]> => {
     const allFiles: GoogleDriveFile[] = [];
     let pageToken: string | null = null;
-    const q = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
+    const baseQ = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
+    const q = `${baseQ} and trashed = false`;
 
     do {
       const res: { data: GoogleDriveResponse } = await axios.get('https://www.googleapis.com/drive/v3/files', {
-        params: { q, fields: 'files(id, name, mimeType, modifiedTime, webContentLink), nextPageToken', orderBy: 'folder,name', pageSize: 100, pageToken: pageToken || undefined },
+        params: {
+          q,
+          fields: 'files(id, name, mimeType, modifiedTime, webContentLink, size, starred), nextPageToken',
+          orderBy: 'folder,name',
+          pageSize: 200,
+          pageToken: pageToken || undefined,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
+        },
         headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        timeout: 15000,
+        timeout: 20000,
       });
-      if (res.data?.files) {
-        allFiles.push(...res.data.files.map((f: GoogleDriveFile) => ({ ...f, accountEmail: account?.email, accountName: account?.name })));
-        pageToken = res.data.nextPageToken || null;
-      } else break;
+      const files = res.data?.files ?? [];
+      allFiles.push(...files.map((f: GoogleDriveFile) => ({ ...f, accountEmail: account?.email, accountName: account?.name })));
+      pageToken = res.data?.nextPageToken || null;
     } while (pageToken);
+
     return allFiles;
   };
 
@@ -595,7 +609,7 @@ const HomeScreen = () => {
       <LinearGradient colors={['#4facfe', '#00f2fe']} style={{ flex: 1 }}>
         {uploadModal('Choose account to upload to', showUploadAccountPicker, setShowUploadAccountPicker, performUpload)}
         {uploadModal('Choose account to upload folder to', showUploadFolderAccountPicker, setShowUploadFolderAccountPicker, performUploadFolder)}
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40, paddingHorizontal: HORIZ_PADDING }} showsVerticalScrollIndicator>
           {renderHeader()}
           {emptyFolderContent}
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start' }}>
@@ -621,7 +635,7 @@ const HomeScreen = () => {
         ListHeaderComponent={renderHeader}
         ListEmptyComponent={emptyFolderContent}
         ListFooterComponent={loading ? <ActivityIndicator size="small" color="#0000ff" /> : null}
-        contentContainerStyle={{ paddingBottom: 40, paddingHorizontal: 0 }}
+        contentContainerStyle={{ paddingBottom: 40, paddingHorizontal: HORIZ_PADDING }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator
       />
@@ -676,7 +690,7 @@ const styles = StyleSheet.create({
   modalCancelText: { fontSize: 16, color: '#666' },
   fileItem: { margin: 10, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.8)', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
   fileName: { fontSize: 15, fontWeight: '600', color: '#00334d', textAlign: 'center', marginTop: 8 },
-  accountText: { fontSize: 12, color: '#336699', marginTop: 4 },
+  accountText: { fontSize: 10, color: '#336699', marginTop: 4 },
   fileDate: { fontSize: 12, color: '#555', marginTop: 2 },
   fileActions: { flexDirection: 'row', justifyContent: 'space-around', width: '100%', marginTop: 10 },
   downloadText: { fontSize: 14, fontWeight: '600', color: '#4cafef', paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 12 },
