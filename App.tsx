@@ -58,8 +58,8 @@ const AppContent = () => {
         <Stack.Navigator>
             {loggedInUser ? (
                 <>
-                    <Stack.Screen name="AccountAdd" component={AccountAddScreen} options={{ headerShown: false }} />
                     <Stack.Screen name="home" component={HomeScreen} options={{ headerShown: false }} />
+                    <Stack.Screen name="AccountAdd" component={AccountAddScreen} options={{ headerShown: false }} />
                     <Stack.Screen name="dropbox" component={DropboxScreen} options={{ headerShown: false }} />
                     <Stack.Screen name="HomeScreenOneDrive" component={HomeScreenOneDrive} options={{ headerShown: false }} />
                     <Stack.Screen name="AllDriveScreen" component={AllDriveScreen} options={{ headerShown: false }} />

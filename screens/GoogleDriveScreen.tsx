@@ -25,6 +25,10 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isGoogleDriveTokenValid } from "../src/Scripts/GoogleUtils";
 import HomeScreenOneDrive from "./HomeScreenOneDrive";
 import { NavigationContainer } from '@react-navigation/native';
+import { useAuth } from "../src/Contexts/AuthContext";
+import { db } from "../src/Firebase/config";
+import { doc, getDoc, setDoc } from "firebase/firestore";
+
 WebBrowser.maybeCompleteAuthSession();
 
 const { width: screenWidth } = Dimensions.get('window');
@@ -60,12 +64,14 @@ interface FolderBreadcrumb {
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
 const HomeScreen = () => {
+  const { loggedInUser } = useAuth();
   const [request, response, promptAsync] = Google.useAuthRequest({
     clientId: '494172450205-daf4jjdss0u07gau3oge0unndfjvha0b.apps.googleusercontent.com',
     scopes: ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile'],
     extraParams: { prompt: 'select_account' },
   });
 
+  const [loadingFromStorage, setLoadingFromStorage] = useState<boolean>(true);
   const [loading, setLoading] = useState<boolean>(false);
   const [userInfo, setUserInfo] = useState<GoogleDriveFile[]>([]);
   const [isRequestReady, setIsRequestReady] = useState<boolean>(false);
@@ -102,6 +108,44 @@ const HomeScreen = () => {
   const spaceBetween = GAP / 2;
 
   useEffect(() => setIsRequestReady(!!request), [request]);
+
+  useEffect(() => {
+    const loadFromFirebase = async () => {
+      if (!loggedInUser?.uid) {
+        setLoadingFromStorage(false);
+        return;
+      }
+      try {
+        const tokenRef = doc(db, 'users', loggedInUser.uid, 'private', 'googleTokens');
+        const snap = await getDoc(tokenRef);
+        const data = snap.data();
+        const accounts = (data?.accounts ?? []) as Array<{ email: string; name?: string; accessToken?: string; expiresAt?: number }>;
+        const entries: Array<{ email: string; name?: string; accessToken: string; storageLimit?: number; storageUsage?: number }> = [];
+        const now = Date.now();
+        for (const acc of accounts) {
+          if (acc.accessToken && acc.expiresAt && acc.expiresAt > now + 5 * 60 * 1000) {
+            try {
+              const identity = await fetchGoogleAccountIdentity(acc.accessToken);
+              const { limit, usage } = await fetchDriveStorageQuota(acc.accessToken);
+              entries.push({ email: acc.email, name: acc.name, accessToken: acc.accessToken, storageLimit: limit, storageUsage: usage });
+            } catch {
+              /* token expired or invalid */
+            }
+          }
+        }
+        if (entries.length > 0) {
+          setConnectedAccountTokens(entries);
+          setFolderStack([]);
+          await loadCurrentFolder(entries, []);
+        }
+      } catch (e) {
+        console.warn('Could not load tokens from Firestore:', e);
+      } finally {
+        setLoadingFromStorage(false);
+      }
+    };
+    loadFromFirebase();
+  }, [loggedInUser?.uid]);
 
   const fetchGoogleAccountIdentity = async (accessToken: string): Promise<GoogleAccountIdentity> => {
     try {
@@ -201,30 +245,48 @@ const HomeScreen = () => {
 
   useEffect(() => {
     const handleResponse = async () => {
+      if (loadingFromStorage) return;
       try {
         if (response?.type === 'success' && 'params' in response && response.params?.access_token) {
           const accessToken = response.params.access_token;
+          const rawExpires = response.params?.expires_in;
+          const expiresIn = typeof rawExpires === 'number' ? rawExpires : (typeof rawExpires === 'string' ? parseInt(rawExpires, 10) : 3600);
+          const expiresAt = !isNaN(expiresIn) ? Date.now() + expiresIn * 1000 : Date.now() + 3600 * 1000;
           const identity = await fetchGoogleAccountIdentity(accessToken);
           const { limit, usage } = await fetchDriveStorageQuota(accessToken);
+          const email = identity?.email || `anon-${Date.now()}`;
           const entry = {
-            email: identity?.email || `anon-${Date.now()}`,
+            email,
             name: identity?.name,
             accessToken,
             storageLimit: limit,
             storageUsage: usage,
           };
-          const newAccounts = connectedAccountTokens.filter((a) => a.email !== identity?.email).concat(entry);
+          const newAccounts = connectedAccountTokens.filter((a) => a.email !== email).concat(entry);
           setConnectedAccountTokens(newAccounts);
           setFolderStack([]);
           await loadCurrentFolder(newAccounts, []);
+
+          if (loggedInUser?.uid) {
+            try {
+              const tokenRef = doc(db, 'users', loggedInUser.uid, 'private', 'googleTokens');
+              const snap = await getDoc(tokenRef);
+              const existing = (snap.data()?.accounts ?? []) as Array<{ email: string; name?: string; accessToken?: string; expiresAt?: number }>;
+              const updated = existing.filter((a) => a.email !== email);
+              updated.push({ email, name: identity?.name, accessToken, expiresAt });
+              await setDoc(tokenRef, { accounts: updated }, { merge: true });
+            } catch (e) {
+              console.warn('Could not save tokens to Firestore:', e);
+            }
+          }
         }
       } catch (err) {
         setError('Failed to authenticate');
       }
     };
     if (response) handleResponse();
-    else promptAsync();
-  }, [response, promptAsync]);
+    else if (!loadingFromStorage && connectedAccountTokens.length === 0) promptAsync();
+  }, [response, promptAsync, loadingFromStorage, connectedAccountTokens.length, loggedInUser?.uid]);
 
   const getUploadParents = (accountEmail: string): string[] | undefined => {
     if (folderStack.length === 0) return undefined;
@@ -557,7 +619,9 @@ const HomeScreen = () => {
 
   const renderHeader = () => (
     <View style={styles.headerContainer}>
-      {loading && !userInfo.length ? <Text>Loading your files...</Text> : (
+      {loadingFromStorage && connectedAccountTokens.length === 0 ? (
+        <Text>Restoring session...</Text>
+      ) : loading && !userInfo.length ? <Text>Loading your files...</Text> : (
         <>
           <Text style={styles.welcomeText}>Your files</Text>
           <View style={styles.searchRow}>
