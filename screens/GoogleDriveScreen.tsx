@@ -37,6 +37,8 @@ interface GoogleDriveFile {
   webContentLink?: string;
   accountEmail?: string;
   accountName?: string;
+  size?: string;
+  starred?: boolean;
 }
 
 interface GoogleDriveResponse { 
@@ -184,8 +186,8 @@ const HomeScreen = () => {
     return () => sub?.remove();
   }, []);
 
-  const CARD_WIDTH = Math.max(screenWidthState / 8, 240);
-  const CARD_HEIGHT = 200; // Fixed height for cleaner grid
+  const CARD_WIDTH = Math.max(screenWidthState / 8, 225);
+  const CARD_HEIGHT = Math.max(screenWidthState / 7.5, 300);
   const numColumns = Math.max(1, Math.floor(screenWidthState * 0.95 / CARD_WIDTH));
   const totalCardsWidth = numColumns * CARD_WIDTH;
   const spaceBetween = (screenWidthState - totalCardsWidth) / numColumns;
@@ -230,19 +232,28 @@ const HomeScreen = () => {
   const fetchFilesInFolder = async (accessToken: string, account: GoogleAccountIdentity, parentId: string): Promise<GoogleDriveFile[]> => {
     const allFiles: GoogleDriveFile[] = [];
     let pageToken: string | null = null;
-    const q = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
+    const baseQ = parentId === 'root' ? "'root' in parents" : `'${parentId}' in parents`;
+    const q = `${baseQ} and trashed = false`;
 
     do {
       const res: { data: GoogleDriveResponse } = await axios.get('https://www.googleapis.com/drive/v3/files', {
-        params: { q, fields: 'files(id, name, mimeType, modifiedTime, webContentLink), nextPageToken', orderBy: 'folder,name', pageSize: 100, pageToken: pageToken || undefined },
+        params: {
+          q,
+          fields: 'files(id, name, mimeType, modifiedTime, webContentLink, size, starred), nextPageToken',
+          orderBy: 'folder,name',
+          pageSize: 200,
+          pageToken: pageToken || undefined,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
+        },
         headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        timeout: 15000,
+        timeout: 20000,
       });
-      if (res.data?.files) {
-        allFiles.push(...res.data.files.map((f: GoogleDriveFile) => ({ ...f, accountEmail: account?.email, accountName: account?.name })));
-        pageToken = res.data.nextPageToken || null;
-      } else break;
+      const files = res.data?.files ?? [];
+      allFiles.push(...files.map((f: GoogleDriveFile) => ({ ...f, accountEmail: account?.email, accountName: account?.name })));
+      pageToken = res.data?.nextPageToken || null;
     } while (pageToken);
+
     return allFiles;
   };
 
@@ -773,7 +784,7 @@ const HomeScreen = () => {
         ListHeaderComponent={renderHeader}
         ListEmptyComponent={emptyFolderContent}
         ListFooterComponent={loading ? <ActivityIndicator size="small" color="#0000ff" /> : null}
-        contentContainerStyle={{ paddingBottom: 40, paddingHorizontal: 0 }}
+        contentContainerStyle={{ paddingBottom: 40, paddingHorizontal: HORIZ_PADDING }}
         keyboardShouldPersistTaps="handled"
         indicatorStyle={isDark ? 'white' : 'black'}
       />
