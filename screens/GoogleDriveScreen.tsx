@@ -13,17 +13,17 @@ import {
   ScrollView,
   Modal,
   Pressable,
+  Animated,
 } from 'react-native';
 import axios from 'axios';
 import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
 import * as DocumentPicker from 'expo-document-picker';
-import { LinearGradient } from 'expo-linear-gradient';
-import { BlurView } from 'expo-blur';
+import { /* LinearGradient removed in favour of themed background */ } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useTheme } from '../src/Contexts/ThemeContext';
 
 import { isGoogleDriveTokenValid } from "../src/Scripts/GoogleUtils";
-import HomeScreenOneDrive from "./HomeScreenOneDrive";
 import { NavigationContainer } from '@react-navigation/native';
 WebBrowser.maybeCompleteAuthSession();
 
@@ -39,7 +39,7 @@ interface GoogleDriveFile {
   accountName?: string;
 }
 
-interface GoogleDriveResponse {
+interface GoogleDriveResponse { 
   files: GoogleDriveFile[];
   nextPageToken?: string;
 }
@@ -57,7 +57,101 @@ interface FolderBreadcrumb {
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
+const AnimatedIcon = Animated.createAnimatedComponent(MaterialCommunityIcons);
+
+// Reusable File Card matching HomePage visuals
+function FileCard({ item, width, height, margin, onPress, onDelete, onDownload, textColor, glassBorderColor, blueColor, cardBackgroundColor, iconFillColor }: any) {
+  const hoverAnim = useRef(new Animated.Value(0)).current;
+  const scale = hoverAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.02] });
+
+  const handleHover = (hovering: boolean) => {
+    Animated.spring(hoverAnim, { toValue: hovering ? 1 : 0, useNativeDriver: Platform.OS !== 'web', friction: 8, tension: 40 }).start();
+  };
+
+  const isFolder = item.mimeType === FOLDER_MIME;
+  const iconName = isFolder ? 'folder' : 
+                   item.mimeType?.includes('image') ? 'image' :
+                   item.mimeType?.includes('pdf') ? 'file-pdf-box' :
+                   item.mimeType?.includes('video') ? 'video' : 
+                   item.mimeType?.includes('spreadsheet') ? 'file-excel' :
+                   item.mimeType?.includes('presentation') ? 'file-powerpoint' :
+                   'file-document';
+  const iconColor = isFolder ? '#ffb74d' : '#3b82f6';
+
+  return (
+    <Pressable
+      onHoverIn={() => handleHover(true)}
+      onHoverOut={() => handleHover(false)}
+      onPress={onPress}
+      style={{ width, height, margin, marginBottom: 20 }}
+    >
+      <Animated.View style={[
+        styles.featureCard,
+        {
+          borderColor: glassBorderColor,
+          transform: [{ scale }],
+          backgroundColor: cardBackgroundColor
+        }
+      ]}>
+        <MaterialCommunityIcons name={iconName} size={40} color={iconColor} style={{ marginBottom: 15 }} />
+        <Animated.Text numberOfLines={2} style={[styles.featureTitle, { color: textColor }]}>{item.name}</Animated.Text>
+        <View style={{ marginTop: 'auto', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Animated.Text style={[styles.featureDesc, { color: textColor }]}>
+            {item.modifiedTime ? new Date(item.modifiedTime).toLocaleDateString() : ''}
+          </Animated.Text>
+          {!isFolder && (
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              {onDownload && (
+                <TouchableOpacity onPress={onDownload}>
+                  <AnimatedIcon name="download" size={20} style={{ color: iconFillColor }} />
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={onDelete}>
+                <MaterialCommunityIcons name="trash-can-outline" size={20} color="#ef4444" />
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
+
 const HomeScreen = () => {
+  const { isDark, toggleTheme, themeAnim } = useTheme();
+  
+  // Interpolations matching HomePage
+  const backgroundColor = themeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['#ffffff', '#000000']
+  });
+  const textColor = themeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['#0f172a', '#ffffff']
+  });
+  const glassBorderColor = themeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['rgba(59, 130, 246, 0.2)', 'rgba(148, 163, 184, 0.2)']
+  });
+  const blueColor = themeAnim.interpolate({ inputRange: [0, 1], outputRange: ['#3b82f6', '#3b67f6'] });
+  
+  const inputBackgroundColor = themeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['rgba(0,0,0,0.05)', 'rgba(255,255,255,0.08)']
+  });
+
+  const cardBackgroundColor = themeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['rgba(255,255,255,0.8)', 'rgba(255,255,255,0.05)']
+  });
+
+  const iconFillColor = themeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['rgba(0,0,0,0.6)', 'rgba(255,255,255,0.6)']
+  });
+
   const [request, response, promptAsync] = Google.useAuthRequest({
     clientId: '494172450205-daf4jjdss0u07gau3oge0unndfjvha0b.apps.googleusercontent.com',
     scopes: ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile'],
@@ -90,8 +184,8 @@ const HomeScreen = () => {
     return () => sub?.remove();
   }, []);
 
-  const CARD_WIDTH = Math.max(screenWidthState / 8, 225);
-  const CARD_HEIGHT = Math.max(screenWidthState / 7.5, 300);
+  const CARD_WIDTH = Math.max(screenWidthState / 8, 240);
+  const CARD_HEIGHT = 200; // Fixed height for cleaner grid
   const numColumns = Math.max(1, Math.floor(screenWidthState * 0.95 / CARD_WIDTH));
   const totalCardsWidth = numColumns * CARD_WIDTH;
   const spaceBetween = (screenWidthState - totalCardsWidth) / numColumns;
@@ -455,20 +549,12 @@ const HomeScreen = () => {
 
   const renderFileItem = ({ item }: { item: GoogleDriveFile }) => {
     const isFolder = item.mimeType === FOLDER_MIME;
-    if (isFolder) {
-      return (
-        <TouchableOpacity activeOpacity={0.7} onPress={() => navigateIntoFolder(item)} style={{ borderRadius: 18 }}>
-          <BlurView intensity={90} tint="light" style={[styles.fileItem, { width: CARD_WIDTH, height: CARD_HEIGHT, marginHorizontal: spaceBetween / 2 }]}>
-            <MaterialCommunityIcons name="folder" size={48} color="#ffb74d" style={{ marginBottom: 8 }} />
-            <Text style={styles.fileName}>{item.name}</Text>
-            {item.accountEmail && <Text style={styles.accountText}>{item.accountName ? `${item.accountName} • ${item.accountEmail}` : item.accountEmail}</Text>}
-            {item.modifiedTime && <Text style={styles.fileDate}>{new Date(item.modifiedTime).toLocaleDateString()}</Text>}
-            <Text style={styles.folderHint}>Tap to open</Text>
-          </BlurView>
-        </TouchableOpacity>
-      );
-    }
+    
     const handleOpenFile = () => {
+      if (isFolder) {
+        navigateIntoFolder(item);
+        return;
+      }
       let url = '';
       if (item.mimeType?.includes('document')) url = `https://docs.google.com/document/d/${item.id}/edit`;
       else if (item.mimeType?.includes('spreadsheet')) url = `https://docs.google.com/spreadsheets/d/${item.id}/edit`;
@@ -476,19 +562,22 @@ const HomeScreen = () => {
       else url = `https://drive.google.com/file/d/${item.id}/view`;
       Linking.openURL(url).catch(() => setError('Failed to open'));
     };
+
     return (
-      <View style={{ borderRadius: 18 }}>
-        <BlurView intensity={90} tint="light" style={[styles.fileItem, { width: CARD_WIDTH, height: CARD_HEIGHT, marginHorizontal: spaceBetween / 2 }]}>
-          <Text style={styles.fileName}>{item.name}</Text>
-          {item.accountEmail && <Text style={styles.accountText}>{item.accountName ? `${item.accountName} • ${item.accountEmail}` : item.accountEmail}</Text>}
-          {item.modifiedTime && <Text style={styles.fileDate}>{new Date(item.modifiedTime).toLocaleDateString()}</Text>}
-          <View style={styles.fileActions}>
-            {item.webContentLink && <TouchableOpacity onPress={() => handleDownload(item.webContentLink!)}><Text style={styles.downloadText}>Download</Text></TouchableOpacity>}
-            <TouchableOpacity onPress={handleOpenFile}><Text style={styles.openText}>Open</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => deleteGoogleDriveFile(item.id, item.accountEmail)}><Text style={styles.deleteText}>Delete</Text></TouchableOpacity>
-          </View>
-        </BlurView>
-      </View>
+      <FileCard
+        item={item}
+        width={CARD_WIDTH}
+        height={CARD_HEIGHT}
+        margin={spaceBetween / 2}
+        onPress={handleOpenFile}
+        onDelete={() => deleteGoogleDriveFile(item.id, item.accountEmail)}
+        onDownload={item.webContentLink ? () => handleDownload(item.webContentLink!) : undefined}
+        textColor={textColor}
+        glassBorderColor={glassBorderColor}
+        blueColor={blueColor}
+        cardBackgroundColor={cardBackgroundColor}
+        iconFillColor={iconFillColor}
+      />
     );
   };
 
@@ -532,7 +621,7 @@ const HomeScreen = () => {
 
   const emptyFolderContent = folderStack.length > 0 && !loading && filteredFiles.length === 0 ? (
     <View style={styles.emptyFolderContainer}>
-      <MaterialCommunityIcons name="folder-open-outline" size={64} color="#002b45" style={{ opacity: 0.6 }} />
+      <MaterialCommunityIcons name="folder-open-outline" size={64} color={isDark ? "#fff" : "#000"} style={{ opacity: 0.6 }} />
       <Text style={styles.emptyFolderText}>This folder is empty</Text>
       <TouchableOpacity style={styles.goBackButton} onPress={() => setFolderStack((prev) => prev.slice(0, -1))}>
         <MaterialCommunityIcons name="arrow-left" size={20} color="#fff" style={{ marginRight: 8 }} />
@@ -543,46 +632,125 @@ const HomeScreen = () => {
 
   const renderHeader = () => (
     <View style={styles.headerContainer}>
-      {loading && !userInfo.length ? <Text>Loading your files...</Text> : (
+      {loading && !userInfo.length ? <Animated.Text style={{ color: textColor as any }}>Loading your files...</Animated.Text> : (
         <>
-          <Text style={styles.welcomeText}>Your files</Text>
+          <Animated.Text style={[styles.welcomeText, { color: textColor as any }]}>Your Files</Animated.Text>
           <View style={styles.searchRow}>
-            <TouchableOpacity style={styles.refreshButton} onPress={onRefresh} disabled={refreshing || loading}>
-              <MaterialCommunityIcons name="refresh" size={18} color="#fff" />
+            <TouchableOpacity onPress={onRefresh} disabled={refreshing || loading}>
+              <Animated.View style={[styles.refreshButton, { backgroundColor: blueColor as any }]}>
+                <MaterialCommunityIcons name="refresh" size={18} color="#fff" />
+              </Animated.View>
             </TouchableOpacity>
-            <TextInput style={styles.searchInput} placeholder="Search files" value={searchText} onChangeText={setSearchText} onSubmitEditing={handleSearchSubmit} returnKeyType="search" />
-            <TouchableOpacity style={styles.searchButton} onPress={handleSearchSubmit}><Text style={styles.buttonText}>Search</Text></TouchableOpacity>
+            <Animated.View style={[styles.searchContainer, { backgroundColor: inputBackgroundColor, borderColor: glassBorderColor }]}>
+              <TextInput 
+                style={[styles.searchInput, { color: isDark ? '#fff' : '#000' }]} 
+                placeholder="Search files..." 
+                placeholderTextColor={isDark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.5)"} 
+                value={searchText} 
+                onChangeText={setSearchText} 
+                onSubmitEditing={handleSearchSubmit} 
+                returnKeyType="search" 
+              />
+            </Animated.View>
+            <TouchableOpacity onPress={handleSearchSubmit}>
+              <Animated.View style={[styles.searchButton, { backgroundColor: blueColor as any }]}>
+                <Animated.Text style={styles.buttonText}>Search</Animated.Text>
+              </Animated.View>
+            </TouchableOpacity>
             <View style={{ flex: 1 }} />
-            <TouchableOpacity style={styles.uploadButton} onPress={handleUpload}><Text style={styles.buttonText}>Upload</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.uploadButton, { marginLeft: 12 }]} onPress={handleUploadFolder}><Text style={styles.buttonText}>Upload folder</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.uploadButton, { marginLeft: 12 }]} onPress={() => isRequestReady && promptAsync()}><Text style={styles.buttonText}>Add Google Account</Text></TouchableOpacity>
+            <TouchableOpacity onPress={handleUpload}>
+              <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any }]}>
+                <Animated.Text style={styles.buttonText}>Upload</Animated.Text>
+              </Animated.View>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleUploadFolder}>
+              <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any, marginLeft: 12 }]}>
+                <Animated.Text style={styles.buttonText}>Upload folder</Animated.Text>
+              </Animated.View>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => isRequestReady && promptAsync()}>
+              <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any, marginLeft: 12 }]}>
+                <Animated.Text style={styles.buttonText}>Add Google Account</Animated.Text>
+              </Animated.View>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={toggleTheme} style={{ marginLeft: 12 }}>
+              <Animated.View style={[styles.themeToggle, { borderColor: glassBorderColor as any, backgroundColor: backgroundColor as any }]}>
+                <MaterialCommunityIcons name={isDark ? 'white-balance-sunny' : 'moon-waning-crescent'} size={18} color={isDark ? '#fff' : '#000'} />
+              </Animated.View>
+            </TouchableOpacity>
           </View>
-          <Text style={styles.filterSectionLabel}>Filter by account</Text>
+          <Animated.Text style={[styles.filterSectionLabel, { color: textColor as any }]}>Filter by account</Animated.Text>
           <View style={styles.filterRow}>
-            <TouchableOpacity style={[styles.filterChip, !filterAccount && styles.filterChipActive]} onPress={() => setFilterAccount(null)}><Text style={[styles.filterChipText, !filterAccount && styles.filterChipTextActive]}>All accounts</Text></TouchableOpacity>
+            <AnimatedTouchableOpacity
+              style={[
+                styles.filterChip,
+                {
+                  backgroundColor: !filterAccount ? blueColor : inputBackgroundColor,
+                  borderColor: !filterAccount ? blueColor : glassBorderColor
+                }
+              ]}
+              onPress={() => setFilterAccount(null)}
+            >
+              <Animated.Text style={[styles.filterChipText, { color: !filterAccount ? '#fff' : (textColor as any) }]}>All accounts</Animated.Text>
+            </AnimatedTouchableOpacity>
             {uniqueAccounts.map((acc) => (
-              <TouchableOpacity key={acc.email} style={[styles.filterChip, filterAccount === acc.email && styles.filterChipActive]} onPress={() => setFilterAccount(acc.email)}><Text style={[styles.filterChipText, filterAccount === acc.email && styles.filterChipTextActive]}>{acc.name || acc.email}</Text></TouchableOpacity>
+              <AnimatedTouchableOpacity
+                key={acc.email}
+                style={[
+                  styles.filterChip,
+                  {
+                    backgroundColor: filterAccount === acc.email ? blueColor : inputBackgroundColor,
+                    borderColor: filterAccount === acc.email ? blueColor : glassBorderColor
+                  }
+                ]}
+                onPress={() => setFilterAccount(acc.email)}
+              >
+                <Animated.Text style={[styles.filterChipText, { color: filterAccount === acc.email ? '#fff' : (textColor as any) }]}>{acc.name || acc.email}</Animated.Text>
+              </AnimatedTouchableOpacity>
             ))}
           </View>
           {folderStack.length > 0 && (
             <View style={styles.breadcrumbContainer}>
               <TouchableOpacity onPress={() => setFolderStack([])} style={styles.breadcrumbItem}>
-                <MaterialCommunityIcons name="folder-multiple" size={18} color="#002b45" />
-                <Text style={styles.breadcrumbText}>All files</Text>
+                <MaterialCommunityIcons name="folder-multiple" size={18} color={isDark ? '#fff' : '#000'} />
+                <Animated.Text style={[styles.breadcrumbText, { color: textColor as any }]}>All files</Animated.Text>
               </TouchableOpacity>
               {folderStack.map((crumb, idx) => (
                 <View key={crumb.folderId} style={styles.breadcrumbRow}>
-                  <Text style={styles.breadcrumbSeparator}> › </Text>
-                  <TouchableOpacity onPress={() => setFolderStack((prev) => prev.slice(0, idx + 1))} style={styles.breadcrumbItem}><Text style={styles.breadcrumbText}>{crumb.folderName}</Text></TouchableOpacity>
+                  <Animated.Text style={[styles.breadcrumbSeparator, { color: textColor as any }]}> › </Animated.Text>
+                  <TouchableOpacity onPress={() => setFolderStack((prev) => prev.slice(0, idx + 1))} style={styles.breadcrumbItem}><Animated.Text style={[styles.breadcrumbText, { color: textColor as any }]}>{crumb.folderName}</Animated.Text></TouchableOpacity>
                 </View>
               ))}
             </View>
           )}
-          <Text style={styles.filterSectionLabel}>Filter by file type</Text>
+          <Animated.Text style={[styles.filterSectionLabel, { color: textColor as any }]}>Filter by file type</Animated.Text>
           <View style={[styles.filterRow, { marginBottom: 8 }]}>
-            <TouchableOpacity style={[styles.filterChip, !filterFileType && styles.filterChipActive]} onPress={() => setFilterFileType(null)}><Text style={[styles.filterChipText, !filterFileType && styles.filterChipTextActive]}>All types</Text></TouchableOpacity>
+            <AnimatedTouchableOpacity
+              style={[
+                styles.filterChip,
+                {
+                  backgroundColor: !filterFileType ? blueColor : inputBackgroundColor,
+                  borderColor: !filterFileType ? blueColor : glassBorderColor
+                }
+              ]}
+              onPress={() => setFilterFileType(null)}
+            >
+              <Animated.Text style={[styles.filterChipText, { color: !filterFileType ? '#fff' : (textColor as any) }]}>All types</Animated.Text>
+            </AnimatedTouchableOpacity>
             {(['document', 'spreadsheet', 'presentation', 'image', 'video', 'pdf', 'other'] as const).map((type) => (
-              <TouchableOpacity key={type} style={[styles.filterChip, filterFileType === type && styles.filterChipActive]} onPress={() => setFilterFileType(type)}><Text style={[styles.filterChipText, filterFileType === type && styles.filterChipTextActive]}>{FILE_TYPE_LABELS[type]}</Text></TouchableOpacity>
+              <AnimatedTouchableOpacity
+                key={type}
+                style={[
+                  styles.filterChip,
+                  {
+                    backgroundColor: filterFileType === type ? blueColor : inputBackgroundColor,
+                    borderColor: filterFileType === type ? blueColor : glassBorderColor
+                  }
+                ]}
+                onPress={() => setFilterFileType(type)}
+              >
+                <Animated.Text style={[styles.filterChipText, { color: filterFileType === type ? '#fff' : (textColor as any) }]}>{FILE_TYPE_LABELS[type]}</Animated.Text>
+              </AnimatedTouchableOpacity>
             ))}
           </View>
         </>
@@ -590,25 +758,9 @@ const HomeScreen = () => {
     </View>
   );
 
-  if (Platform.OS === 'web') {
-    return (
-      <LinearGradient colors={['#4facfe', '#00f2fe']} style={{ flex: 1 }}>
-        {uploadModal('Choose account to upload to', showUploadAccountPicker, setShowUploadAccountPicker, performUpload)}
-        {uploadModal('Choose account to upload folder to', showUploadFolderAccountPicker, setShowUploadFolderAccountPicker, performUploadFolder)}
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator>
-          {renderHeader()}
-          {emptyFolderContent}
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start' }}>
-            {filteredFiles.map((file) => <View key={file.id}>{renderFileItem({ item: file })}</View>)}
-          </View>
-          {loading && <View style={{ marginTop: 16, alignItems: 'center' }}><ActivityIndicator size="small" color="#0000ff" /></View>}
-        </ScrollView>
-      </LinearGradient>
-    );
-  }
-
+  // Use a themed animated container for both web and native so visuals match HomePage.
   return (
-    <LinearGradient colors={['#4facfe', '#00f2fe']} style={{ flex: 1 }}>
+    <Animated.View style={[{ flex: 1 }, { backgroundColor }] as any}>
       {uploadModal('Choose account to upload to', showUploadAccountPicker, setShowUploadAccountPicker, performUpload)}
       {uploadModal('Choose account to upload folder to', showUploadFolderAccountPicker, setShowUploadFolderAccountPicker, performUploadFolder)}
       <FlatList
@@ -623,65 +775,71 @@ const HomeScreen = () => {
         ListFooterComponent={loading ? <ActivityIndicator size="small" color="#0000ff" /> : null}
         contentContainerStyle={{ paddingBottom: 40, paddingHorizontal: 0 }}
         keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator
+        indicatorStyle={isDark ? 'white' : 'black'}
       />
-    </LinearGradient>
+    </Animated.View>
   );
 };
 
+const pageFont = Platform.select({ web: 'Poppins, Arial, sans-serif', default: 'System' });
+
 const styles = StyleSheet.create({
-  headerContainer: { padding: 20, paddingTop: 50 },
-  welcomeText: { fontSize: 28, fontWeight: '800', marginBottom: 24, color: '#002b45', letterSpacing: 0.6 },
+  headerContainer: { paddingHorizontal: 30, paddingTop: 60, paddingBottom: 20 },
+  welcomeText: { fontSize: 40, fontWeight: '700', marginBottom: 30, fontFamily: pageFont, letterSpacing: -1 },
   searchRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 24 },
   refreshButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#0280da',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#3b82f6',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 10,
   },
-  searchInput: { height: 48, flex: 0.45, backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 25, paddingHorizontal: 18, color: '#002b45', fontSize: 16 },
-  searchButton: { backgroundColor: '#0280da', paddingVertical: 12, paddingHorizontal: 22, borderRadius: 25, marginLeft: 12, elevation: 4 },
-  uploadButton: { backgroundColor: '#0280da', paddingVertical: 12, paddingHorizontal: 28, borderRadius: 25, elevation: 4 },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '700', letterSpacing: 0.4, textAlign: 'center' },
-  filterSectionLabel: { fontSize: 14, fontWeight: '600', color: '#002b45', marginTop: 16, marginBottom: 8 },
+  searchContainer: { flex: 0.5, height: 50, borderRadius: 25, borderWidth: 1, justifyContent: 'center' },
+  searchInput: { paddingHorizontal: 20, fontSize: 16, fontFamily: pageFont, height: '100%' },
+  searchButton: { backgroundColor: '#3b82f6', paddingVertical: 12, paddingHorizontal: 22, borderRadius: 25, marginLeft: 12 },
+  uploadButton: { backgroundColor: '#3b82f6', paddingVertical: 12, paddingHorizontal: 28, borderRadius: 25 },
+  buttonText: { color: '#fff', fontSize: 16, fontWeight: '700', letterSpacing: 0.4, textAlign: 'center', fontFamily: pageFont },
+  filterSectionLabel: { fontSize: 14, fontWeight: '600', marginTop: 16, marginBottom: 8, opacity: 0.7 },
   filterRow: { flexDirection: 'row', flexWrap: 'wrap' },
-  filterChip: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.7)', marginRight: 8, marginBottom: 8 },
-  filterChipActive: { backgroundColor: '#0280da' },
-  filterChipText: { fontSize: 14, fontWeight: '600', color: '#002b45' },
+  filterChip: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, borderWidth: 1, marginRight: 8, marginBottom: 8 },
+  filterChipText: { fontSize: 14, fontWeight: '600', fontFamily: pageFont },
   filterChipTextActive: { color: '#fff' },
   breadcrumbContainer: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', marginTop: 12, marginBottom: 12 },
   breadcrumbRow: { flexDirection: 'row', alignItems: 'center' },
-  breadcrumbItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.6)' },
-  breadcrumbText: { fontSize: 14, fontWeight: '600', color: '#002b45', marginLeft: 4 },
-  breadcrumbSeparator: { fontSize: 16, color: '#002b45', fontWeight: '700' },
-  folderHint: { fontSize: 12, color: '#336699', marginTop: 4 },
+  breadcrumbItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(150,150,150,0.2)' },
+  breadcrumbText: { fontSize: 14, fontWeight: '600', marginLeft: 4, fontFamily: pageFont },
+  breadcrumbSeparator: { fontSize: 16, fontWeight: '700', fontFamily: pageFont, marginHorizontal: 4 },
   emptyFolderContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48, paddingHorizontal: 24 },
-  emptyFolderText: { fontSize: 18, fontWeight: '600', color: '#002b45', marginTop: 16 },
-  goBackButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0280da', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 25, marginTop: 20 },
-  goBackButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  emptyFolderText: { fontSize: 18, fontWeight: '600', marginTop: 16, fontFamily: pageFont, opacity: 0.7 },
+  goBackButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#3b82f6', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 25, marginTop: 20 },
+  goBackButtonText: { color: '#fff', fontSize: 16, fontWeight: '700', fontFamily: pageFont },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: '#fff', borderRadius: 16, padding: 24, width: '90%', maxWidth: 400 },
-  modalTitle: { fontSize: 18, fontWeight: '700', color: '#002b45', marginBottom: 16 },
-  modalMostFreeButton: { backgroundColor: '#e3f2fd', padding: 16, borderRadius: 12, marginBottom: 12 },
-  modalMostFreeText: { fontSize: 16, fontWeight: '600', color: '#0280da' },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: '#002b45', marginBottom: 16, fontFamily: pageFont },
+  modalMostFreeButton: { backgroundColor: '#e9f2ff', padding: 16, borderRadius: 12, marginBottom: 12 },
+  modalMostFreeText: { fontSize: 16, fontWeight: '600', color: '#3b82f6', fontFamily: pageFont },
   modalMostFreeSubtext: { fontSize: 12, color: '#666', marginTop: 4 },
   modalAccountButton: { padding: 16, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  modalAccountText: { fontSize: 16, fontWeight: '600', color: '#002b45' },
-  modalAccountEmail: { fontSize: 12, color: '#666', marginTop: 2 },
-  modalStorageText: { fontSize: 12, color: '#0280da', marginTop: 4 },
+  modalAccountText: { fontSize: 16, fontWeight: '600', color: '#002b45', fontFamily: pageFont },
+  modalAccountEmail: { fontSize: 12, color: '#666', marginTop: 2, fontFamily: pageFont },
+  modalStorageText: { fontSize: 12, color: '#3b82f6', marginTop: 4, fontFamily: pageFont },
   modalCancelButton: { marginTop: 16, padding: 12, alignItems: 'center' },
-  modalCancelText: { fontSize: 16, color: '#666' },
-  fileItem: { margin: 10, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.8)', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
-  fileName: { fontSize: 15, fontWeight: '600', color: '#00334d', textAlign: 'center', marginTop: 8 },
-  accountText: { fontSize: 12, color: '#336699', marginTop: 4 },
-  fileDate: { fontSize: 12, color: '#555', marginTop: 2 },
-  fileActions: { flexDirection: 'row', justifyContent: 'space-around', width: '100%', marginTop: 10 },
-  downloadText: { fontSize: 14, fontWeight: '600', color: '#4cafef', paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 12 },
-  openText: { fontSize: 14, fontWeight: '600', color: '#00bcd4', paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 12 },
-  deleteText: { fontSize: 14, fontWeight: '600', color: '#ff5252', paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 12 },
+  modalCancelText: { fontSize: 16, color: '#666', fontFamily: pageFont },
+  themeToggle: { padding: 8, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  
+  // New Card Styles
+  featureCard: {
+    width: '100%',
+    height: '100%',
+    padding: 20,
+    borderRadius: 24,
+    borderWidth: 1,
+    justifyContent: 'flex-start',
+  },
+  featureTitle: { fontSize: 16, fontWeight: '700', marginTop: 8, fontFamily: pageFont },
+  featureDesc: { fontSize: 12, opacity: 0.7, fontFamily: pageFont },
 });
 
-export default HomeScreen;
+export default HomeScreen;  

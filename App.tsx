@@ -1,24 +1,50 @@
 import React, { useEffect } from 'react';
-import { LogBox, StyleSheet } from 'react-native';
+import { LogBox, StyleSheet, Platform } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { RootStackNavigatorParamsList } from './RootStackNavigator';
 
+import HomePage from './screens/HomePage';
 import HomeScreen from './screens/GoogleDriveScreen';
-import WelcomeScreen from './screens/WelcomeScreen';
 import RegisterScreen from './screens/RegisterScreen';
 import LoginScreen from './screens/LoginScreen';
-import AccountAddScreen from './screens/AccountAddScreen';
-import DropboxScreen from './screens/DropboxScreen';
-import HomeScreenOneDrive from './screens/HomeScreenOneDrive';
-import AllDriveScreen from './screens/AllDriveScreen';
 
 import { AuthProvider, useAuth } from './src/Contexts/AuthContext';
+import { ThemeProvider } from './src/Contexts/ThemeContext';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { onAuthStateChanged, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import { authentication } from './src/Firebase/config';
 
+
+
 LogBox.ignoreAllLogs();
+
+if (Platform.OS === 'web' && typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.textContent = `
+    html, body { overflow: auto !important; height: 100%; } 
+    #root { min-height: 100%; }
+    
+    /* Custom Scrollbar Styling */
+    ::-webkit-scrollbar {
+      width: 0px;
+      height: 12px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(0,0,0,0);
+    }
+    ::-webkit-scrollbar-thumb {
+      background-color: rgba(150, 150, 150, 0.5);
+      border-radius: 10px;
+      border: 3px solid transparent;
+      background-clip: content-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(150, 150, 150, 0.8);
+    }
+  `;
+  document.head.appendChild(style);
+}
 
 GoogleSignin.configure({
     scopes: ['https://www.googleapis.com/auth/drive.readonly'],
@@ -52,15 +78,11 @@ const AppContent = () => {
         <Stack.Navigator>
             {loggedInUser ? (
                 <>
-                    <Stack.Screen name="AccountAdd" component={AccountAddScreen} options={{ headerShown: false }} />
                     <Stack.Screen name="home" component={HomeScreen} options={{ headerShown: false }} />
-                    <Stack.Screen name="dropbox" component={DropboxScreen} options={{ headerShown: false }} />
-                    <Stack.Screen name="HomeScreenOneDrive" component={HomeScreenOneDrive} options={{ headerShown: false }} />
-                    <Stack.Screen name="AllDriveScreen" component={AllDriveScreen} options={{ headerShown: false }} />
                 </>
             ) : (
                 <>
-                    <Stack.Screen name="welcome" component={WelcomeScreen} options={{ headerShown: false }} />
+                    <Stack.Screen name="index" component={HomePage} options={{ headerShown: false }} />
                     <Stack.Screen name="login" component={LoginScreen} options={{ headerShown: false }} />
                     <Stack.Screen name="register" component={RegisterScreen} options={{ headerShown: false }} />
                 </>
@@ -72,9 +94,11 @@ const AppContent = () => {
 export default function App() {
     return (
         <NavigationContainer>
-            <AuthProvider>
-                <AppContent />
-            </AuthProvider>
+            <ThemeProvider>
+                <AuthProvider>
+                    <AppContent />
+                </AuthProvider>
+            </ThemeProvider>
         </NavigationContainer>
     );
 }

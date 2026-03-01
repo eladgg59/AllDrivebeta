@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
     SafeAreaView,
     Text,
@@ -7,24 +7,23 @@ import {
     Dimensions,
     Pressable,
     ActivityIndicator,
+    View,
+    Animated,
+    TouchableOpacity,
 } from "react-native";
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackNavigatorParamsList } from '../RootStackNavigator';
 import { authentication } from "../src/Firebase/config";
 import { createUserWithEmailAndPassword } from "firebase/auth";
 import { useAuth } from "../src/Contexts/AuthContext";
-import { LinearGradient } from 'expo-linear-gradient';
-import Animated, {
-    FadeInDown,
-    FadeInUp,
-    useAnimatedStyle,
-    useSharedValue,
-    withSpring,
-} from 'react-native-reanimated';
+import { useTheme } from "../src/Contexts/ThemeContext";
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 const { width } = Dimensions.get('window');
 const MAX_BUTTON_WIDTH = 650;
 const BUTTON_HEIGHT = 75;
+
+const AnimatedTextInput = Animated.createAnimatedComponent(TextInput);
 
 type RegisterScreenProps = {
     navigation: StackNavigationProp<RootStackNavigatorParamsList>;
@@ -37,23 +36,69 @@ const RegisterScreen = ({ navigation }: RegisterScreenProps) => {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState('');
     const { setLoggedInUser } = useAuth();
-    const buttonScale = useSharedValue(1);
-    const [isButtonHovered, setIsButtonHovered] = useState(false);
+    const { isDark, toggleTheme, themeAnim } = useTheme();
+    const buttonHoverAnim = useRef(new Animated.Value(0)).current;
+    
+    // Entrance Animations
+    const formOpacity = useRef(new Animated.Value(0)).current;
+    const formTranslateY = useRef(new Animated.Value(-50)).current;
+    const btnOpacity = useRef(new Animated.Value(0)).current;
+    const btnTranslateY = useRef(new Animated.Value(50)).current;
 
-    const buttonStyle = useAnimatedStyle(() => ({
-        transform: [{ scale: withSpring(buttonScale.value) }],
-    }));
+    useEffect(() => {
+        Animated.parallel([
+            Animated.timing(formOpacity, { toValue: 1, duration: 1000, useNativeDriver: true }),
+            Animated.spring(formTranslateY, { toValue: 0, friction: 6, tension: 40, useNativeDriver: true }),
+            Animated.sequence([
+                Animated.delay(300),
+                Animated.parallel([
+                    Animated.timing(btnOpacity, { toValue: 1, duration: 1000, useNativeDriver: true }),
+                    Animated.spring(btnTranslateY, { toValue: 0, friction: 6, tension: 40, useNativeDriver: true })
+                ])
+            ])
+        ]).start();
+    }, []);
 
-    const handlePressIn = () => {
-        buttonScale.value = withSpring(0.95);
+    const handleHover = (isHovering: boolean) => {
+        Animated.spring(buttonHoverAnim, {
+            toValue: isHovering ? 1 : 0,
+            useNativeDriver: false,
+            friction: 8,
+            tension: 40
+        }).start();
     };
 
-    const handlePressOut = () => {
-        buttonScale.value = withSpring(1);
-    };
+    const btnScale = buttonHoverAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.03] });
+    const auraOpacity = buttonHoverAnim.interpolate({ inputRange: [0, 1], outputRange: [0.3, 0.7] });
+
+    const backgroundColor = themeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ['#ffffff', '#000000']
+    });
+
+    const textColor = themeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ['#0f172a', '#ffffff']
+    });
+
+    const inputBackgroundColor = themeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ['rgba(0,0,0,0.05)', 'rgba(255,255,255,0.08)']
+    });
+
+    const inputBorderColor = themeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ['rgba(0,0,0,0.1)', 'rgba(148, 163, 184, 0.2)']
+    });
+
+    const blueColor = themeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ['#3b82f6', '#3b67f6']
+    });
 
     const handleSignUp = () => {
         if (password !== confirmPassword) {
+            setError("Passwords do not match");
             return;
         }
         setIsLoading(true);
@@ -78,37 +123,47 @@ const RegisterScreen = ({ navigation }: RegisterScreenProps) => {
     };
 
     return (
-        <LinearGradient
-            colors={['#1a237e', '#4a148c']}
-            style={{ flex: 1 }}
-        >
-            <SafeAreaView style={styles.container}>
+        <Animated.View style={[styles.container, { backgroundColor }]}>
+            <SafeAreaView style={{flex: 1, width: '100%'}}>
+                <View style={styles.header}>
+                    <TouchableOpacity onPress={() => navigation.navigate('index')} style={styles.backButton}>
+                        <MaterialCommunityIcons name="arrow-left" size={24} color={isDark ? "#fff" : "#000"} />
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={toggleTheme} style={styles.themeBtn}>
+                        <MaterialCommunityIcons
+                            name={isDark ? "white-balance-sunny" : "moon-waning-crescent"}
+                            size={24}
+                            color={isDark ? "#fff" : "#000"}
+                        />
+                    </TouchableOpacity>
+                </View>
+
+                <View style={styles.contentContainer}>
                 <Animated.View
-                    entering={FadeInDown.duration(1000).springify()}
-                    style={styles.formContainer}
+                    style={[styles.formContainer, { opacity: formOpacity, transform: [{ translateY: formTranslateY }] }]}
                 >
-                    <Text style={styles.title}>Create Account</Text>
-                    <TextInput
-                        style={styles.input}
+                    <Animated.Text style={[styles.title, { color: textColor }]}>Create Account</Animated.Text>
+                    <AnimatedTextInput
+                        style={[styles.input, { backgroundColor: inputBackgroundColor, borderColor: inputBorderColor, color: textColor }]}
                         placeholder="Email"
-                        placeholderTextColor="rgba(255,255,255,0.7)"
+                        placeholderTextColor={isDark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.5)"}
                         keyboardType="email-address"
                         autoCapitalize="none"
                         value={email}
                         onChangeText={setEmail}
                     />
-                    <TextInput
-                        style={styles.input}
+                    <AnimatedTextInput
+                        style={[styles.input, { backgroundColor: inputBackgroundColor, borderColor: inputBorderColor, color: textColor }]}
                         placeholder="Password"
-                        placeholderTextColor="rgba(255,255,255,0.7)"
+                        placeholderTextColor={isDark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.5)"}
                         secureTextEntry
                         value={password}
                         onChangeText={setPassword}
                     />
-                    <TextInput
-                        style={styles.input}
+                    <AnimatedTextInput
+                        style={[styles.input, { backgroundColor: inputBackgroundColor, borderColor: inputBorderColor, color: textColor }]}
                         placeholder="Confirm Password"
-                        placeholderTextColor="rgba(255,255,255,0.7)"
+                        placeholderTextColor={isDark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.5)"}
                         secureTextEntry
                         value={confirmPassword}
                         onChangeText={setConfirmPassword}
@@ -116,57 +171,71 @@ const RegisterScreen = ({ navigation }: RegisterScreenProps) => {
                 </Animated.View>
 
                 <Animated.View
-                    entering={FadeInUp.duration(1000).springify().delay(300)}
-                    style={styles.buttonContainer}
+                    style={[styles.buttonContainer, { opacity: btnOpacity, transform: [{ translateY: btnTranslateY }] }]}
                 >
-                    <Text style={{color: '#e12c50', fontSize: "20px", paddingBottom: 20}}>{error}</Text>
-                    <Animated.View style={buttonStyle}>
-                        <Pressable
-                            style={[
-                                styles.button,
-                                isButtonHovered && styles.buttonHovered
-                            ]}
-                            onPressIn={handlePressIn}
-                            onPressOut={handlePressOut}
-                            onPress={handleSignUp}
-                            onHoverIn={() => setIsButtonHovered(true)}
-                            onHoverOut={() => setIsButtonHovered(false)}
-                        >
+                    {error ? <Text style={styles.errorText}>{error}</Text> : null}
+                    <Pressable
+                        onPress={handleSignUp}
+                        onHoverIn={() => handleHover(true)}
+                        onHoverOut={() => handleHover(false)}
+                        onPressIn={() => handleHover(true)}
+                        onPressOut={() => handleHover(false)}
+                    >
+                        <Animated.View style={[styles.auraGlow, { backgroundColor: blueColor, opacity: auraOpacity, transform: [{ scale: btnScale }] }]} />
+                        <Animated.View style={[styles.button, { backgroundColor: blueColor, transform: [{ scale: btnScale }] }]}>
                             <Text style={styles.buttonText}>
                                 {isLoading ? 'Creating Account...' : 'Sign Up'}
                             </Text>
                             {isLoading && (
                                 <ActivityIndicator
                                     size="small"
-                                    color="#4a148c"
+                                    color="#fff"
                                     style={styles.loader}
                                 />
                             )}
-                        </Pressable>
-                    </Animated.View>
+                        </Animated.View>
+                    </Pressable>
 
                     <Pressable
                         onPress={() => navigation.navigate('login')}
                         style={styles.registerLink}
                     >
-                        <Text style={styles.registerText}>
+                        <Animated.Text style={[styles.registerText, { color: textColor }]}>
                             Already have an account? Log In
-                        </Text>
+                        </Animated.Text>
                     </Pressable>
                 </Animated.View>
+                </View>
             </SafeAreaView>
-        </LinearGradient>
+        </Animated.View>
     );
 };
 
 const styles = {
     container: {
         flex: 1,
+    },
+    contentContainer: {
+        flex: 1,
+        justifyContent: 'center' as const,
+        alignItems: 'center' as const,
+        paddingHorizontal: 20,
+    },
+    header: {
+        position: 'absolute',
+        top: 20,
+        left: 20,
+        right: 20,
+        zIndex: 10,
+        flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        paddingHorizontal: 20,
-        paddingVertical: 40,
-        width: '100%',
+    },
+    backButton: {
+        padding: 10,
+    },
+    themeBtn: {
+        padding: 10,
     },
     formContainer: {
         flex: 1,
@@ -176,58 +245,50 @@ const styles = {
         maxWidth: MAX_BUTTON_WIDTH,
     },
     title: {
-        fontSize: 48,
-        fontWeight: '700',
+        fontSize: 60,
+        fontWeight: '700' as const,
         fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
-        color: '#fff',
         marginBottom: 40,
-        textAlign: 'center',
+        textAlign: 'center' as const,
     },
     input: {
         width: '100%',
         height: 60,
-        backgroundColor: 'rgba(255,255,255,0.1)',
         borderRadius: 30,
         paddingHorizontal: 20,
         fontSize: 18,
-        color: '#fff',
         marginBottom: 20,
-        borderWidth: 2,
-        borderColor: 'rgba(255,255,255,0.3)',
+        borderWidth: 1,
     },
     buttonContainer: {
         width: '100%',
-        alignItems: 'center',
-        paddingBottom: 20,
+        alignItems: 'center' as const,
+        paddingBottom: 70,
+        marginTop: 'auto',
     },
     button: {
         width: Math.min(width - 40, MAX_BUTTON_WIDTH),
         height: BUTTON_HEIGHT,
         borderRadius: BUTTON_HEIGHT / 2,
-        backgroundColor: '#fff',
-        justifyContent: 'center',
-        alignItems: 'center',
-        flexDirection: 'row',
-        shadowColor: '#000',
-        shadowOffset: {
-            width: 0,
-            height: 4,
-        },
-        shadowOpacity: 0.3,
-        shadowRadius: 4.65,
-        elevation: 8,
+        justifyContent: 'center' as const,
+        alignItems: 'center' as const,
+        flexDirection: 'row' as const,
+    },
+    auraGlow: {
+        position: 'absolute',
+        width: Math.min(width - 40, MAX_BUTTON_WIDTH),
+        height: BUTTON_HEIGHT,
+        borderRadius: BUTTON_HEIGHT / 2,
+        ...Platform.select({ web: { filter: 'blur(25px)' }, default: { shadowColor: '#3b82f6', shadowRadius: 20, elevation: 20 } })
     },
     buttonText: {
         fontSize: 24,
-        fontWeight: '700',
+        fontWeight: '700' as const,
         fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
-        color: '#4a148c',
+        color: '#fff',
         letterSpacing: 1.5,
-        textTransform: 'uppercase',
+        textTransform: 'uppercase' as const,
         marginRight: 10,
-    },
-    buttonHovered: {
-        backgroundColor: '#dadada',
     },
     loader: {
         marginLeft: 10,
@@ -237,10 +298,15 @@ const styles = {
         padding: 10,
     },
     registerText: {
-        color: '#fff',
         fontSize: 16,
-        textDecorationLine: 'underline',
+        textDecorationLine: 'underline' as const,
     },
+    errorText: {
+        color: '#e12c50',
+        fontSize: 18,
+        paddingBottom: 20,
+        textAlign: 'center' as const,
+    }
 };
 
 export default RegisterScreen;
