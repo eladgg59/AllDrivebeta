@@ -1,10 +1,10 @@
-// firebase.ts
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
   setPersistence,
   browserLocalPersistence,
 } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDw0ofhfcZs4e6RH9QzkMObt8zjTv3Zz4M",
@@ -18,10 +18,11 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const authentication = getAuth(app);
+const db = getFirestore(app);
 
 // Ensure persistent login
 setPersistence(authentication, browserLocalPersistence).catch((error) => {
   console.error("Firebase persistence error:", error);
 });
 
-export { authentication };
+export { authentication, db };

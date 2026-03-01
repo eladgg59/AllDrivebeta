@@ -1,6 +1,5 @@
 import React, { useEffect } from 'react';
 import { LogBox, StyleSheet, Platform } from 'react-native';
-import { LogBox, StyleSheet, Platform } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { RootStackNavigatorParamsList } from './RootStackNavigator';
