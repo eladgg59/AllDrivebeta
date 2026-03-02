@@ -138,7 +138,7 @@ export default function App() {
           <TouchableOpacity onPress={toggleTheme} style={styles.themeBtn}>
             <MaterialCommunityIcons 
               name={isDark ? "white-balance-sunny" : "moon-waning-crescent"} 
-              size={20} 
+              size={isWeb ? 20 : 18} 
               color={isDark ? "#fff" : "#000"} 
             />
           </TouchableOpacity>
@@ -171,7 +171,7 @@ export default function App() {
         {/* Features grid */}
         <View style={styles.featuresContainer}>
           <FeatureCard 
-            icon={<MaterialCommunityIcons name="shield-check" size={32} color="#3b82f6" />} 
+            icon={<MaterialCommunityIcons name="shield-check" size={isWeb ? 32 : 26} color="#3b82f6" />} 
             title="We prioritize your privacy" 
             desc="we don't collect, store, or access any of your personal data while connecting your Google Drive accounts." 
             textColor={textColor}
@@ -179,7 +179,7 @@ export default function App() {
             backgroundColor={isDark ? 'rgb(17, 17, 17)' : 'rgba(255,255,255,1)'}
           />
           <FeatureCard 
-            icon={<MaterialCommunityIcons name="lightning-bolt-circle" size={32} color="#3b82f6" />} 
+            icon={<MaterialCommunityIcons name="lightning-bolt-circle" size={isWeb ? 32 : 26} color="#3b82f6" />} 
             title="Instant Sync" 
             desc="Collaborate in real time without delays. Work seamlessly across all your devices and stay perfectly in sync." 
             textColor={textColor}
@@ -187,7 +187,7 @@ export default function App() {
             backgroundColor={isDark ? 'rgb(17, 17, 17)' : 'rgba(255,255,255,1)'}
           />
           <FeatureCard 
-            icon={<MaterialCommunityIcons name="layers" size={32} color="#3b82f6" />} 
+            icon={<MaterialCommunityIcons name="layers" size={isWeb ? 32 : 26} color="#3b82f6" />} 
             title="Multiple Accounts" 
             desc="Connect and manage multiple Google Drive accounts in one streamlined workspace for total control and convenience." 
             textColor={textColor}
@@ -234,22 +234,28 @@ function FeatureCard({ icon, title, desc, textColor, borderColor, backgroundColo
   );
 }
 
+const isWeb = Platform.OS === 'web';
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 30, paddingTop: 60 },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: isWeb ? 30 : 16,
+    paddingTop: isWeb ? 60 : 40,
+  },
   logoRow: { flexDirection: 'row', alignItems: 'center' },
-  logoBox: { width: 30, height: 30, borderRadius: 8 },
-  logoText: { fontSize: 22, fontWeight: '900', marginLeft: 12, letterSpacing: -1 },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 15 },
-  loginBtn: { 
-    paddingHorizontal: 20, 
-    paddingVertical: 10, 
-    borderRadius: 16, 
+  logoBox: { width: isWeb ? 30 : 26, height: isWeb ? 30 : 26, borderRadius: isWeb ? 8 : 6 },
+  logoText: { fontSize: isWeb ? 22 : 18, fontWeight: '900', marginLeft: isWeb ? 12 : 8, letterSpacing: -1 },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: isWeb ? 15 : 10 },
+  loginBtn: {
+    paddingHorizontal: isWeb ? 20 : 14,
+    paddingVertical: isWeb ? 10 : 8,
+    borderRadius: isWeb ? 16 : 12,
     borderWidth: 1,
     backdropFilter: 'blur(12px)',
-    zIndex: 2
+    zIndex: 2,
   },
-  loginBtnText: { fontSize: 16, fontWeight: '700' },
+  loginBtnText: { fontSize: isWeb ? 16 : 14, fontWeight: '700' },
   loginAuraGlow: {
     position: 'absolute',
     width: '100%',
@@ -257,8 +263,8 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     ...Platform.select({ web: { filter: 'blur(25px)' }, default: { elevation: 20, shadowColor: '#3b82f6', shadowRadius: 20 } })
   },
-  signupBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 16, zIndex: 2 },
-  signupBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  signupBtn: { paddingHorizontal: isWeb ? 20 : 14, paddingVertical: isWeb ? 10 : 8, borderRadius: isWeb ? 16 : 12, zIndex: 2 },
+  signupBtnText: { color: '#fff', fontSize: isWeb ? 16 : 14, fontWeight: '700' },
   signupAuraGlow: {
     position: 'absolute',
     width: '100%',
@@ -266,14 +272,21 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     ...Platform.select({ web: { filter: 'blur(25px)' }, default: { elevation: 20, shadowColor: '#3b82f6', shadowRadius: 20 } })
   },
-  themeBtn: { padding: 10 },
-  content: { flex: 1, justifyContent: 'center', paddingHorizontal: 40 },
-  heroTitle: { fontSize: 100, fontWeight: '700', textAlign: 'center', lineHeight: 60, letterSpacing: -2.5, fontFamily: Platform.select({ web: 'Poppins, Arial, sans-serif', default: 'System' }) },
-  description: { fontSize: 18, opacity: 0.6, textAlign: 'center', marginTop: 40, maxWidth: '80%', alignSelf: 'center' },
-  buttonContainer: { marginTop: 50, gap: 15, alignItems: 'center' },
-  fullWidth: { width: '20%', alignItems: 'center' },
-  primaryBtn: { width: '100%', paddingVertical: 20, borderRadius: 16, alignItems: 'center', zIndex: 2 },
-  primaryBtnText: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  themeBtn: { padding: isWeb ? 10 : 8 },
+  content: { flex: 1, justifyContent: 'center', paddingHorizontal: isWeb ? 40 : 20 },
+  heroTitle: {
+    fontSize: isWeb ? 100 : 36,
+    fontWeight: '700',
+    textAlign: 'center',
+    lineHeight: isWeb ? 60 : 44,
+    letterSpacing: -2.5,
+    fontFamily: Platform.select({ web: 'Poppins, Arial, sans-serif', default: 'System' }),
+  },
+  description: { fontSize: isWeb ? 18 : 14, opacity: 0.6, textAlign: 'center', marginTop: isWeb ? 40 : 24, maxWidth: '90%', alignSelf: 'center' },
+  buttonContainer: { marginTop: isWeb ? 50 : 28, gap: isWeb ? 15 : 12, alignItems: 'center' },
+  fullWidth: { width: isWeb ? '20%' : '70%', minWidth: isWeb ? undefined : 200, alignItems: 'center' },
+  primaryBtn: { width: '100%', paddingVertical: isWeb ? 20 : 14, borderRadius: isWeb ? 16 : 12, alignItems: 'center', zIndex: 2 },
+  primaryBtnText: { color: '#fff', fontSize: isWeb ? 18 : 15, fontWeight: '700' },
   auraGlow: { 
     position: 'absolute', 
     width: '100%', 
@@ -295,34 +308,32 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
-    gap: 24,
-    marginTop: 40,
-    paddingHorizontal: 20,
+    gap: isWeb ? 24 : 16,
+    marginTop: isWeb ? 40 : 24,
+    paddingHorizontal: isWeb ? 20 : 12,
   },
   cardWrapper: {
-    flexBasis: '30%',
-    maxWidth: '30%',
-    marginBottom: 20,
+    flexBasis: isWeb ? '30%' : '45%',
+    maxWidth: isWeb ? '30%' : '45%',
+    marginBottom: isWeb ? 20 : 14,
   },
   featureCard: {
     width: '100%',
-    padding: 20,
-    borderRadius: 24,
+    padding: isWeb ? 20 : 14,
+    borderRadius: isWeb ? 24 : 18,
     backgroundColor: 'rgba(255,255,255,0.08)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.2)',
   },
   featureTitle: {
-    fontSize: 18,
+    fontSize: isWeb ? 18 : 15,
     fontWeight: '700',
-    marginTop: 8,
-    // color will be overridden via props
+    marginTop: isWeb ? 8 : 6,
   },
   featureDesc: {
-    fontSize: 14,
+    fontSize: isWeb ? 14 : 12,
     opacity: 0.7,
-    marginTop: 4,
-    // color will be overridden via props
-  }
+    marginTop: isWeb ? 4 : 2,
+  },
 
 });

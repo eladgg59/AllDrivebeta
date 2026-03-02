@@ -1,10 +1,15 @@
+// firebase.ts
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
+  initializeAuth,
+  getReactNativePersistence,
   setPersistence,
   browserLocalPersistence,
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { Platform } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDw0ofhfcZs4e6RH9QzkMObt8zjTv3Zz4M",
@@ -17,12 +22,19 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const authentication = getAuth(app);
-const db = getFirestore(app);
 
-// Ensure persistent login
-setPersistence(authentication, browserLocalPersistence).catch((error) => {
-  console.error("Firebase persistence error:", error);
-});
+let authentication;
+if (Platform.OS === "web") {
+  authentication = getAuth(app);
+  setPersistence(authentication, browserLocalPersistence).catch((error) => {
+    console.error("Firebase persistence error:", error);
+  });
+} else {
+  authentication = initializeAuth(app, {
+    persistence: getReactNativePersistence(AsyncStorage),
+  });
+}
+
+const db = getFirestore(app);
 
 export { authentication, db };

@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { LogBox, StyleSheet, Platform } from 'react-native';
+import { LogBox, StyleSheet, Platform, View, ActivityIndicator } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { RootStackNavigatorParamsList } from './RootStackNavigator';
@@ -11,11 +11,8 @@ import LoginScreen from './screens/LoginScreen';
 
 import { AuthProvider, useAuth } from './src/Contexts/AuthContext';
 import { ThemeProvider } from './src/Contexts/ThemeContext';
-import { GoogleSignin } from '@react-native-google-signin/google-signin';
-import { onAuthStateChanged, setPersistence, browserLocalPersistence } from 'firebase/auth';
+import { onAuthStateChanged } from 'firebase/auth';
 import { authentication } from './src/Firebase/config';
-
-
 
 LogBox.ignoreAllLogs();
 
@@ -46,11 +43,6 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   document.head.appendChild(style);
 }
 
-GoogleSignin.configure({
-    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
-    webClientId: '182469331264-evqkdsma127oqs6ict1ckmhvcmdlk97n.apps.googleusercontent.com',
-});
-
 const Stack = createStackNavigator<RootStackNavigatorParamsList>();
 
 const AppContent = () => {
@@ -58,21 +50,30 @@ const AppContent = () => {
     const [checkingAuth, setCheckingAuth] = React.useState(true);
 
     useEffect(() => {
-        setPersistence(authentication, browserLocalPersistence)
-            .then(() => {
-                const unsubscribe = onAuthStateChanged(authentication, (user) => {
-                    setLoggedInUser(user);
-                    setCheckingAuth(false);
-                });
-                return unsubscribe;
-            })
-            .catch((error) => {
-                console.error('Failed to set Firebase persistence:', error);
+        let mounted = true;
+        const unsubscribe = onAuthStateChanged(authentication, (user) => {
+            if (mounted) {
+                setLoggedInUser(user);
                 setCheckingAuth(false);
-            });
+            }
+        });
+        const timeout = setTimeout(() => {
+            if (mounted) setCheckingAuth(false);
+        }, 5000);
+        return () => {
+            mounted = false;
+            unsubscribe();
+            clearTimeout(timeout);
+        };
     }, []);
 
-    if (checkingAuth) return null; // or a loading indicator
+    if (checkingAuth) {
+        return (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' }}>
+                <ActivityIndicator size="large" color="#3b82f6" />
+            </View>
+        );
+    }
 
     return (
         <Stack.Navigator>

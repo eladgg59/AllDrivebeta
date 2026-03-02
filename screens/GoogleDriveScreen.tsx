@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import axios from 'axios';
 import * as Google from 'expo-auth-session/providers/google';
+import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import * as DocumentPicker from 'expo-document-picker';
 import { /* LinearGradient removed in favour of themed background */ } from 'expo-linear-gradient';
@@ -29,6 +30,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { useAuth } from "../src/Contexts/AuthContext";
 import { db } from "../src/Firebase/config";
 import { doc, getDoc, setDoc } from "firebase/firestore";
+import { encryptToken, decryptToken } from "../src/utils/tokenEncryption";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -90,7 +92,7 @@ function FileCard({ item, width, height, margin, onPress, onDelete, onDownload, 
       onHoverIn={() => handleHover(true)}
       onHoverOut={() => handleHover(false)}
       onPress={onPress}
-      style={{ width, height, margin, marginBottom: 20 }}
+      style={{ width, height, margin, marginBottom: Platform.OS === 'web' ? 20 : 10 }}
     >
       <Animated.View style={[
         styles.featureCard,
@@ -100,21 +102,21 @@ function FileCard({ item, width, height, margin, onPress, onDelete, onDownload, 
           backgroundColor: cardBackgroundColor
         }
       ]}>
-        <MaterialCommunityIcons name={iconName} size={40} color={iconColor} style={{ marginBottom: 15 }} />
+        <MaterialCommunityIcons name={iconName} size={Platform.OS === 'web' ? 40 : 24} color={iconColor} style={{ marginBottom: Platform.OS === 'web' ? 15 : 6 }} />
         <Animated.Text numberOfLines={2} style={[styles.featureTitle, { color: textColor }]}>{item.name}</Animated.Text>
         <View style={{ marginTop: 'auto', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
           <Animated.Text style={[styles.featureDesc, { color: textColor }]}>
             {item.modifiedTime ? new Date(item.modifiedTime).toLocaleDateString() : ''}
           </Animated.Text>
           {!isFolder && (
-            <View style={{ flexDirection: 'row', gap: 10 }}>
+            <View style={{ flexDirection: 'row', gap: Platform.OS === 'web' ? 10 : 8 }}>
               {onDownload && (
                 <TouchableOpacity onPress={onDownload}>
-                  <AnimatedIcon name="download" size={20} style={{ color: iconFillColor }} />
+                  <AnimatedIcon name="download" size={Platform.OS === 'web' ? 20 : 14} style={{ color: iconFillColor }} />
                 </TouchableOpacity>
               )}
               <TouchableOpacity onPress={onDelete}>
-                <MaterialCommunityIcons name="trash-can-outline" size={20} color="#ef4444" />
+                <MaterialCommunityIcons name="trash-can-outline" size={Platform.OS === 'web' ? 20 : 14} color="#ef4444" />
               </TouchableOpacity>
             </View>
           )}
@@ -162,10 +164,20 @@ const HomeScreen = () => {
   
 
   const { loggedInUser } = useAuth();
+  // Use Expo auth proxy on native so Google accepts the redirect URI (exp:// is blocked by Google).
+  // Add this exact URL to Google Cloud Console > Credentials > OAuth 2.0 Client > Authorized redirect URIs
+  const proxyRedirectUri = Platform.OS !== 'web' ? (() => {
+    try {
+      return AuthSession.getRedirectUrl();
+    } catch {
+      return 'https://auth.expo.io/@anonymous/AllDrive';
+    }
+  })() : undefined;
   const [request, response, promptAsync] = Google.useAuthRequest({
     clientId: '494172450205-daf4jjdss0u07gau3oge0unndfjvha0b.apps.googleusercontent.com',
     scopes: ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile'],
     extraParams: { prompt: 'select_account' },
+    ...(proxyRedirectUri && { redirectUri: proxyRedirectUri }),
   });
   
   const [loadingFromStorage, setLoadingFromStorage] = useState<boolean>(true);
@@ -195,8 +207,11 @@ const HomeScreen = () => {
     return () => sub?.remove();
   }, []);
 
-  const CARD_WIDTH = Math.max(screenWidthState / 8, 225);
-  const CARD_HEIGHT = Math.max(screenWidthState / 7.5, 300);
+  const isMobile = Platform.OS !== 'web';
+  const CARD_MIN_WIDTH = isMobile ? 100 : 225;
+  const CARD_MIN_HEIGHT = isMobile ? 140 : 300;
+  const CARD_WIDTH = Math.max(screenWidthState / (isMobile ? 4 : 8), CARD_MIN_WIDTH);
+  const CARD_HEIGHT = Math.max(screenWidthState / (isMobile ? 3.5 : 7.5), CARD_MIN_HEIGHT);
   const numColumns = Math.max(1, Math.floor(screenWidthState * 0.95 / CARD_WIDTH));
   const totalCardsWidth = numColumns * CARD_WIDTH;
   const spaceBetween = (screenWidthState - totalCardsWidth) / numColumns;
@@ -217,14 +232,15 @@ const HomeScreen = () => {
         const entries: Array<{ email: string; name?: string; accessToken: string; storageLimit?: number; storageUsage?: number }> = [];
         const now = Date.now();
         for (const acc of accounts) {
-          if (acc.accessToken && acc.expiresAt && acc.expiresAt > now + 5 * 60 * 1000) {
-            try {
-              const identity = await fetchGoogleAccountIdentity(acc.accessToken);
-              const { limit, usage } = await fetchDriveStorageQuota(acc.accessToken);
-              entries.push({ email: acc.email, name: acc.name, accessToken: acc.accessToken, storageLimit: limit, storageUsage: usage });
-            } catch {
-              /* token expired or invalid */
-            }
+          if (!acc.accessToken || !acc.expiresAt || acc.expiresAt <= now + 5 * 60 * 1000) continue;
+          const accessToken = decryptToken(acc.accessToken, loggedInUser.uid) ?? acc.accessToken;
+          if (!accessToken) continue;
+          try {
+            const identity = await fetchGoogleAccountIdentity(accessToken);
+            const { limit, usage } = await fetchDriveStorageQuota(accessToken);
+            entries.push({ email: acc.email, name: acc.name, accessToken, storageLimit: limit, storageUsage: usage });
+          } catch {
+            /* token expired or invalid */
           }
         }
         if (entries.length > 0) {
@@ -367,7 +383,8 @@ const HomeScreen = () => {
               const snap = await getDoc(tokenRef);
               const existing = (snap.data()?.accounts ?? []) as Array<{ email: string; name?: string; accessToken?: string; expiresAt?: number }>;
               const updated = existing.filter((a) => a.email !== email);
-              updated.push({ email, name: identity?.name, accessToken, expiresAt });
+              const encryptedToken = encryptToken(accessToken, loggedInUser.uid);
+              updated.push({ email, name: identity?.name, accessToken: encryptedToken, expiresAt });
               await setDoc(tokenRef, { accounts: updated }, { merge: true });
             } catch (e) {
               console.warn('Could not save tokens to Firestore:', e);
@@ -698,10 +715,10 @@ const HomeScreen = () => {
 
   const emptyFolderContent = folderStack.length > 0 && !loading && filteredFiles.length === 0 ? (
     <View style={styles.emptyFolderContainer}>
-      <MaterialCommunityIcons name="folder-open-outline" size={64} color={isDark ? "#fff" : "#000"} style={{ opacity: 0.6 }} />
+      <MaterialCommunityIcons name="folder-open-outline" size={isMobile ? 48 : 64} color={isDark ? "#fff" : "#000"} style={{ opacity: 0.6 }} />
       <Text style={styles.emptyFolderText}>This folder is empty</Text>
       <TouchableOpacity style={styles.goBackButton} onPress={() => setFolderStack((prev) => prev.slice(0, -1))}>
-        <MaterialCommunityIcons name="arrow-left" size={20} color="#fff" style={{ marginRight: 8 }} />
+        <MaterialCommunityIcons name="arrow-left" size={isMobile ? 18 : 20} color="#fff" style={{ marginRight: isMobile ? 6 : 8 }} />
         <Text style={styles.goBackButtonText}>Go back</Text>
       </TouchableOpacity>
     </View>
@@ -717,7 +734,7 @@ const HomeScreen = () => {
           <View style={styles.searchRow}>
             <TouchableOpacity onPress={onRefresh} disabled={refreshing || loading}>
               <Animated.View style={[styles.refreshButton, { backgroundColor: blueColor as any }]}>
-                <MaterialCommunityIcons name="refresh" size={18} color="#fff" />
+                <MaterialCommunityIcons name="refresh" size={isMobile ? 16 : 18} color="#fff" />
               </Animated.View>
             </TouchableOpacity>
             <Animated.View style={[styles.searchContainer, { backgroundColor: inputBackgroundColor, borderColor: glassBorderColor }]}>
@@ -736,28 +753,56 @@ const HomeScreen = () => {
                 <Animated.Text style={styles.buttonText}>Search</Animated.Text>
               </Animated.View>
             </TouchableOpacity>
-            <View style={{ flex: 1 }} />
+            {isWeb ? (
+              <>
+                <View style={{ flex: 1 }} />
+                <TouchableOpacity onPress={handleUpload}>
+                  <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any }]}>
+                    <Animated.Text style={styles.buttonText}>Upload</Animated.Text>
+                  </Animated.View>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleUploadFolder}>
+                  <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any, marginLeft: 12 }]}>
+                    <Animated.Text style={styles.buttonText}>Upload folder</Animated.Text>
+                  </Animated.View>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => isRequestReady && promptAsync()}>
+                  <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any, marginLeft: 12 }]}>
+                    <Animated.Text style={styles.buttonText}>Add Google Account</Animated.Text>
+                  </Animated.View>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={toggleTheme} style={{ marginLeft: 12 }}>
+                  <Animated.View style={[styles.themeToggle, { borderColor: glassBorderColor as any, backgroundColor: backgroundColor as any }]}>
+                    <MaterialCommunityIcons name={isDark ? 'white-balance-sunny' : 'moon-waning-crescent'} size={18} color={isDark ? '#fff' : '#000'} />
+                  </Animated.View>
+                </TouchableOpacity>
+              </>
+            ) : null}
+          </View>
+          {isMobile && (
+          <View style={[styles.searchRow, { marginTop: 8, marginBottom: 0 }]}>
             <TouchableOpacity onPress={handleUpload}>
               <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any }]}>
                 <Animated.Text style={styles.buttonText}>Upload</Animated.Text>
               </Animated.View>
             </TouchableOpacity>
             <TouchableOpacity onPress={handleUploadFolder}>
-              <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any, marginLeft: 12 }]}>
-                <Animated.Text style={styles.buttonText}>Upload folder</Animated.Text>
+              <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any, marginLeft: 8 }]}>
+                <Animated.Text style={styles.buttonText}>Folder</Animated.Text>
               </Animated.View>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => isRequestReady && promptAsync()}>
-              <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any, marginLeft: 12 }]}>
-                <Animated.Text style={styles.buttonText}>Add Google Account</Animated.Text>
+              <Animated.View style={[styles.uploadButton, { backgroundColor: blueColor as any, marginLeft: 8 }]}>
+                <Animated.Text style={styles.buttonText}>Add Account</Animated.Text>
               </Animated.View>
             </TouchableOpacity>
-            <TouchableOpacity onPress={toggleTheme} style={{ marginLeft: 12 }}>
+            <TouchableOpacity onPress={toggleTheme} style={{ marginLeft: 8 }}>
               <Animated.View style={[styles.themeToggle, { borderColor: glassBorderColor as any, backgroundColor: backgroundColor as any }]}>
-                <MaterialCommunityIcons name={isDark ? 'white-balance-sunny' : 'moon-waning-crescent'} size={18} color={isDark ? '#fff' : '#000'} />
+                <MaterialCommunityIcons name={isDark ? 'white-balance-sunny' : 'moon-waning-crescent'} size={16} color={isDark ? '#fff' : '#000'} />
               </Animated.View>
             </TouchableOpacity>
           </View>
+          )}
           <Animated.Text style={[styles.filterSectionLabel, { color: textColor as any }]}>Filter by account</Animated.Text>
           <View style={styles.filterRow}>
             <AnimatedTouchableOpacity
@@ -791,7 +836,7 @@ const HomeScreen = () => {
           {folderStack.length > 0 && (
             <View style={styles.breadcrumbContainer}>
               <TouchableOpacity onPress={() => setFolderStack([])} style={styles.breadcrumbItem}>
-                <MaterialCommunityIcons name="folder-multiple" size={18} color={isDark ? '#fff' : '#000'} />
+                <MaterialCommunityIcons name="folder-multiple" size={isMobile ? 16 : 18} color={isDark ? '#fff' : '#000'} />
                 <Animated.Text style={[styles.breadcrumbText, { color: textColor as any }]}>All files</Animated.Text>
               </TouchableOpacity>
               {folderStack.map((crumb, idx) => (
@@ -803,7 +848,7 @@ const HomeScreen = () => {
             </View>
           )}
           <Animated.Text style={[styles.filterSectionLabel, { color: textColor as any }]}>Filter by file type</Animated.Text>
-          <View style={[styles.filterRow, { marginBottom: 8 }]}>
+          <View style={[styles.filterRow, { marginBottom: isMobile ? 6 : 8 }]}>
             <AnimatedTouchableOpacity
               style={[
                 styles.filterChip,
@@ -852,7 +897,7 @@ const HomeScreen = () => {
         ListHeaderComponent={renderHeader}
         ListEmptyComponent={emptyFolderContent}
         ListFooterComponent={loading ? <ActivityIndicator size="small" color="#0000ff" /> : null}
-        contentContainerStyle={{ paddingBottom: 40, paddingHorizontal: 16 }}
+        contentContainerStyle={{ paddingBottom: isMobile ? 24 : 40, paddingHorizontal: isMobile ? 12 : 16 }}
         keyboardShouldPersistTaps="handled"
         indicatorStyle={isDark ? 'white' : 'black'}
       />
@@ -862,38 +907,43 @@ const HomeScreen = () => {
 
 const pageFont = Platform.select({ web: 'Poppins, Arial, sans-serif', default: 'System' });
 
+const isWeb = Platform.OS === 'web';
 const styles = StyleSheet.create({
-  headerContainer: { paddingHorizontal: 30, paddingTop: 60, paddingBottom: 20 },
-  welcomeText: { fontSize: 40, fontWeight: '700', marginBottom: 30, fontFamily: pageFont, letterSpacing: -1 },
-  searchRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 24 },
+  headerContainer: {
+    paddingHorizontal: isWeb ? 30 : 16,
+    paddingTop: isWeb ? 60 : 40,
+    paddingBottom: isWeb ? 20 : 12,
+  },
+  welcomeText: { fontSize: isWeb ? 40 : 26, fontWeight: '700', marginBottom: isWeb ? 30 : 16, fontFamily: pageFont, letterSpacing: -1 },
+  searchRow: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, alignItems: 'center', marginBottom: isWeb ? 24 : 12 },
   refreshButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: isWeb ? 40 : 34,
+    height: isWeb ? 40 : 34,
+    borderRadius: isWeb ? 20 : 17,
     backgroundColor: '#3b82f6',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 10,
+    marginRight: isWeb ? 10 : 8,
   },
-  searchContainer: { flex: 0.5, height: 50, borderRadius: 25, borderWidth: 1, justifyContent: 'center' },
-  searchInput: { paddingHorizontal: 20, fontSize: 16, fontFamily: pageFont, height: '100%' },
-  searchButton: { backgroundColor: '#3b82f6', paddingVertical: 12, paddingHorizontal: 22, borderRadius: 25, marginLeft: 12 },
-  uploadButton: { backgroundColor: '#3b82f6', paddingVertical: 12, paddingHorizontal: 28, borderRadius: 25 },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '700', letterSpacing: 0.4, textAlign: 'center', fontFamily: pageFont },
-  filterSectionLabel: { fontSize: 14, fontWeight: '600', marginTop: 16, marginBottom: 8, opacity: 0.7 },
-  filterRow: { flexDirection: 'row', flexWrap: 'wrap' },
-  filterChip: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, borderWidth: 1, marginRight: 8, marginBottom: 8 },
-  filterChipText: { fontSize: 14, fontWeight: '600', fontFamily: pageFont },
+  searchContainer: { flex: 1, minWidth: isWeb ? undefined : 100, height: isWeb ? 50 : 40, borderRadius: isWeb ? 25 : 20, borderWidth: 1, justifyContent: 'center' },
+  searchInput: { paddingHorizontal: isWeb ? 20 : 14, fontSize: isWeb ? 16 : 14, fontFamily: pageFont, height: '100%' },
+  searchButton: { backgroundColor: '#3b82f6', paddingVertical: isWeb ? 12 : 8, paddingHorizontal: isWeb ? 22 : 14, borderRadius: isWeb ? 25 : 20, marginLeft: isWeb ? 12 : 8 },
+  uploadButton: { backgroundColor: '#3b82f6', paddingVertical: isWeb ? 12 : 8, paddingHorizontal: isWeb ? 28 : 14, borderRadius: isWeb ? 25 : 20 },
+  buttonText: { color: '#fff', fontSize: isWeb ? 16 : 13, fontWeight: '700', letterSpacing: 0.4, textAlign: 'center' as const, fontFamily: pageFont },
+  filterSectionLabel: { fontSize: isWeb ? 14 : 12, fontWeight: '600', marginTop: isWeb ? 16 : 12, marginBottom: isWeb ? 8 : 6, opacity: 0.7 },
+  filterRow: { flexDirection: 'row' as const, flexWrap: 'wrap' as const },
+  filterChip: { paddingVertical: isWeb ? 8 : 6, paddingHorizontal: isWeb ? 14 : 10, borderRadius: isWeb ? 20 : 16, borderWidth: 1, marginRight: isWeb ? 8 : 6, marginBottom: isWeb ? 8 : 6 },
+  filterChipText: { fontSize: isWeb ? 14 : 12, fontWeight: '600', fontFamily: pageFont },
   filterChipTextActive: { color: '#fff' },
-  breadcrumbContainer: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', marginTop: 12, marginBottom: 12 },
-  breadcrumbRow: { flexDirection: 'row', alignItems: 'center' },
-  breadcrumbItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(150,150,150,0.2)' },
-  breadcrumbText: { fontSize: 14, fontWeight: '600', marginLeft: 4, fontFamily: pageFont },
-  breadcrumbSeparator: { fontSize: 16, fontWeight: '700', fontFamily: pageFont, marginHorizontal: 4 },
-  emptyFolderContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48, paddingHorizontal: 24 },
-  emptyFolderText: { fontSize: 18, fontWeight: '600', marginTop: 16, fontFamily: pageFont, opacity: 0.7 },
-  goBackButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#3b82f6', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 25, marginTop: 20 },
-  goBackButtonText: { color: '#fff', fontSize: 16, fontWeight: '700', fontFamily: pageFont },
+  breadcrumbContainer: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, alignItems: 'center', marginTop: isWeb ? 12 : 8, marginBottom: isWeb ? 12 : 8 },
+  breadcrumbRow: { flexDirection: 'row' as const, alignItems: 'center' },
+  breadcrumbItem: { flexDirection: 'row' as const, alignItems: 'center', paddingVertical: isWeb ? 4 : 3, paddingHorizontal: isWeb ? 8 : 6, borderRadius: isWeb ? 8 : 6, borderWidth: 1, borderColor: 'rgba(150,150,150,0.2)' },
+  breadcrumbText: { fontSize: isWeb ? 14 : 12, fontWeight: '600', marginLeft: isWeb ? 4 : 2, fontFamily: pageFont },
+  breadcrumbSeparator: { fontSize: isWeb ? 16 : 13, fontWeight: '700', fontFamily: pageFont, marginHorizontal: isWeb ? 4 : 2 },
+  emptyFolderContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: isWeb ? 48 : 32, paddingHorizontal: isWeb ? 24 : 16 },
+  emptyFolderText: { fontSize: isWeb ? 18 : 15, fontWeight: '600', marginTop: isWeb ? 16 : 12, fontFamily: pageFont, opacity: 0.7 },
+  goBackButton: { flexDirection: 'row' as const, alignItems: 'center', backgroundColor: '#3b82f6', paddingVertical: isWeb ? 12 : 10, paddingHorizontal: isWeb ? 24 : 18, borderRadius: isWeb ? 25 : 20, marginTop: isWeb ? 20 : 14 },
+  goBackButtonText: { color: '#fff', fontSize: isWeb ? 16 : 14, fontWeight: '700', fontFamily: pageFont },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: '#fff', borderRadius: 16, padding: 24, width: '90%', maxWidth: 400 },
   modalTitle: { fontSize: 18, fontWeight: '700', color: '#002b45', marginBottom: 16, fontFamily: pageFont },
@@ -908,17 +958,16 @@ const styles = StyleSheet.create({
   modalCancelText: { fontSize: 16, color: '#666', fontFamily: pageFont },
   themeToggle: { padding: 8, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   
-  // New Card Styles
   featureCard: {
     width: '100%',
     height: '100%',
-    padding: 20,
-    borderRadius: 24,
+    padding: isWeb ? 20 : 10,
+    borderRadius: isWeb ? 24 : 14,
     borderWidth: 1,
-    justifyContent: 'flex-start',
+    justifyContent: 'flex-start' as const,
   },
-  featureTitle: { fontSize: 16, fontWeight: '700', marginTop: 8, fontFamily: pageFont },
-  featureDesc: { fontSize: 12, opacity: 0.7, fontFamily: pageFont },
+  featureTitle: { fontSize: isWeb ? 16 : 11, fontWeight: '700', marginTop: isWeb ? 8 : 4, fontFamily: pageFont },
+  featureDesc: { fontSize: isWeb ? 12 : 9, opacity: 0.7, fontFamily: pageFont },
 });
 
 export default HomeScreen;  
